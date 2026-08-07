@@ -18,9 +18,9 @@
 - [ ] **[P0] Spike:** JSONC comment preservation. `serde_json5` strips comments — hard KPI (100% retention). Evaluate `json5` parser-with-spans / `jsonc-parser` / manual span-splice edit before §2 JSONC writer.
 
 ## 2. Core Data Engines
-- [ ] **[P0]** Implement `AgentFile` struct and `.opencode/agents/` recursive file scanner in `src/core/agent_scanner.rs`.
-- [ ] **[P0]** Build frontmatter parser wrapper around `gray_matter` in `src/core/agent_parser.rs`.
-- [ ] **[P0]** Unit test: Verify parsing and re-writing YAML frontmatter preserves exact Markdown body text.
+- [x] **[P0]** Implement `AgentFile` struct and `.opencode/agents/` file scanner in `src/core/agent_scanner.rs`. *(non-recursive for MVP; recursion P2)*
+- [x] **[P0]** Build frontmatter parser wrapper around `gray_matter` in `src/core/agent_parser.rs`. *Design: split-at-delimiter fidelity — returns original raw YAML slice verbatim; avoids reserialization key-order/comment drift. `ParsedAgent` holds raw yaml + body.*
+- [x] **[P0]** Unit test: Verify parsing and re-writing YAML frontmatter preserves exact Markdown body text. *Strengthened: fixture asserts byte-identical body **and** raw YAML (comments, key order) — catches beta fidelity risk beyond PRD's body-only contract.*
 - [ ] **[P1]** Implement JSONC config reader and writer for `opencode.jsonc` in `src/core/jsonc_config.rs`.
 - [ ] **[P1]** Unit test: Ensure comments and trailing commas in `opencode.jsonc` remain intact after mutation.
 
