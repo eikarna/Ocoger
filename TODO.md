@@ -15,7 +15,7 @@
 - [x] **[P0]** Initialize Cargo binary project (`cargo new ocoger`). *(used `cargo init` in-repo; edition 2021, MSRV 1.75)*
 - [x] **[P0]** Configure `Cargo.toml` with dependencies (`ratatui`, `crossterm`, `tokio`, `gray_matter`, `reqwest`, `serde`, `clap` + `serde_yaml`, `anyhow`, `thiserror`). **Deviation:** `comment-json` is a JS-only crate; substituted `serde_json5` per ARCH fallback — see open spike below.
 - [x] **[P0]** Setup logging infrastructure using `tracing-subscriber` + `tracing-appender` writing to `.ocoger.log`.
-- [ ] **[P0] Spike:** JSONC comment preservation. `serde_json5` strips comments — hard KPI (100% retention). Evaluate `json5` parser-with-spans / `jsonc-parser` / manual span-splice edit before §2 JSONC writer.
+- [x] **[P0] Spike:** JSONC comment preservation. **Verdict: `jsonc-parser = { version = "0.33", features = ["cst","serde"] }`** — CST `object_value_or_set() -> get(key) -> prop.set_value(...)` performs surgical single-key edits while preserving all comments/trailing commas/formatting byte-for-byte (validated by `examples/jsonc_spike.rs`, 15/15 checks incl. byte-delta == value-diff). Same technique as TS `sst/opencode` (Microsoft jsonc-parser modify/applyEdits). `serde_json5` rejected (lossy).
 
 ## 2. Core Data Engines
 - [x] **[P0]** Implement `AgentFile` struct and `.opencode/agents/` file scanner in `src/core/agent_scanner.rs`. *(non-recursive for MVP; recursion P2)*

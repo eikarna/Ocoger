@@ -77,7 +77,7 @@ pub struct AgentFile {
 ### 2.2 JSONC Engine (`src/core/jsonc_config.rs`)
 
 * **Responsibility:** Read, edit, and serialize `opencode.json` / `opencode.jsonc` preserving user comments.
-* **Crate Dependencies:** `comment-json` or `serde_json5`.
+* **Crate Dependencies:** `jsonc-parser` with `cst` + `serde` features. *(Supersedes `comment-json` (JS-only) / `serde_json5` (lossy) — validated by spike in TODO §1; CST set_value edits preserve 100% of comments/formatting byte-for-byte.)*
 * **Data Structure:**
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,7 +127,7 @@ pub struct ProviderConfig {
 | `crossterm` | Terminal Backend & Event Handling | Reliable cross-platform terminal control (ANSI/Windows Console). |
 | `tokio` | Async Runtime & Process Control | Required for background HTTP polling and child process streaming. |
 | `gray_matter` | YAML Frontmatter Extraction | Isolates frontmatter from Markdown body cleanly without full AST parse. |
-| `comment-json` | JSONC Parsing | Preserves formatting and `//` comments in `opencode.jsonc`. |
+| `jsonc-parser` | JSONC Parsing | Lossless CST preserving comments and formatting on edit; Rust analogue of the `jsonc-parser` used by opencode. |
 | `reqwest` | HTTP Client | Features `json` support, async connection pooling, and rustls. |
 | `clap` | Command Line Argument Parsing | Clean CLI argument handling (e.g., specifying custom config paths). |
 | `tracing` + `tracing-appender` | Logging Architecture | Non-blocking structured internal application logging. |

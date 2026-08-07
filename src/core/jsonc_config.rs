@@ -1,6 +1,9 @@
 //! Reader/writer for `opencode.json` / `opencode.jsonc`.
-// TODO(P1): JSONC comment-preservation spike — `serde_json5` strips comments.
-// See TODO.md; this is a hard KPI (100% comment retention).
+//!
+//! Strategy (spike-validated, TODO §1): `jsonc-parser` CST edits via
+//! `object_value_or_set() -> get(key) -> prop.set_value(...)` perform surgical
+//! single-key mutations preserving 100% of comments and formatting
+//! byte-for-byte. Never round-trip through serde — it strips comments.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
