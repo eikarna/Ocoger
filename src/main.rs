@@ -5,7 +5,11 @@ mod ui;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "ocoger", version, about = "TUI manager for OpenCode agents, models, and process supervision")]
+#[command(
+    name = "ocoger",
+    version,
+    about = "TUI manager for OpenCode agents, models, and process supervision"
+)]
 struct Cli {
     /// Path to the project directory containing `.opencode/`
     #[arg(short, long, default_value = ".")]
