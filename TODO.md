@@ -12,9 +12,10 @@
 ---
 
 ## 1. Project Setup & Core Foundation
-- [ ] **[P0]** Initialize Cargo binary project (`cargo new ocoger`).
-- [ ] **[P0]** Configure `Cargo.toml` with dependencies (`ratatui`, `crossterm`, `tokio`, `gray_matter`, `comment-json`, `reqwest`, `serde`, `clap`).
-- [ ] **[P0]** Setup logging infrastructure using `tracing-subscriber` writing to `.ocoger.log`.
+- [x] **[P0]** Initialize Cargo binary project (`cargo new ocoger`). *(used `cargo init` in-repo; edition 2021, MSRV 1.75)*
+- [x] **[P0]** Configure `Cargo.toml` with dependencies (`ratatui`, `crossterm`, `tokio`, `gray_matter`, `reqwest`, `serde`, `clap` + `serde_yaml`, `anyhow`, `thiserror`). **Deviation:** `comment-json` is a JS-only crate; substituted `serde_json5` per ARCH fallback — see open spike below.
+- [x] **[P0]** Setup logging infrastructure using `tracing-subscriber` + `tracing-appender` writing to `.ocoger.log`.
+- [ ] **[P0] Spike:** JSONC comment preservation. `serde_json5` strips comments — hard KPI (100% retention). Evaluate `json5` parser-with-spans / `jsonc-parser` / manual span-splice edit before §2 JSONC writer.
 
 ## 2. Core Data Engines
 - [ ] **[P0]** Implement `AgentFile` struct and `.opencode/agents/` recursive file scanner in `src/core/agent_scanner.rs`.

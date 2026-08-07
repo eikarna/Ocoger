@@ -1,0 +1,24 @@
+[package]
+name = "ocoger"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "TUI manager for OpenCode agents, models, and process supervision"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+gray_matter = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1"
+serde_json5 = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing-appender = "0.2"
+anyhow = "1"
+thiserror = "2"
