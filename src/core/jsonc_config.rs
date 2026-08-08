@@ -65,6 +65,20 @@ impl JsoncConfig {
         Ok(None)
     }
 
+    /// Load or create an empty-but-valid config for edit+save flows. Path is
+    /// opencode.jsonc when neither file exists so save() writes a new file.
+    pub fn ensure_loaded(project: &std::path::Path) -> Result<Self, ConfigError> {
+        if let Some(c) = Self::load(project)? {
+            return Ok(c);
+        }
+        let path = project.join("opencode.jsonc");
+        let default_raw = "{\n  \"$schema\": \"https://opencode.ai/config.json\"\n}\n".to_string();
+        Ok(Self {
+            path,
+            raw: default_raw,
+        })
+    }
+
     /// Typed read-only view of the whole config (comments discarded on read).
     pub fn value(&self) -> Result<Value, ConfigError> {
         let parsed: Value =
@@ -300,5 +314,35 @@ mod tests {
         assert!(s.contains("// primary comment"), "top comment preserved");
         assert!(s.contains("// comment inside"), "sibling comment preserved");
         assert!(s.contains("\"api_key\": \"sk-new\""));
+    }
+
+    #[test]
+    fn ensure_loaded_returns_default_and_save_creates_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "ocoger-cfg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(
+            JsoncConfig::load(&dir).unwrap().is_none(),
+            "no config present"
+        );
+        let cfg = JsoncConfig::ensure_loaded(&dir).unwrap();
+        assert_eq!(
+            cfg.value().unwrap().get("$schema").and_then(Value::as_str),
+            Some("https://opencode.ai/config.json")
+        );
+        cfg.save().unwrap();
+        let re = JsoncConfig::load(&dir).unwrap().expect("exists");
+        assert_eq!(
+            re.path.file_name().unwrap().to_string_lossy(),
+            "opencode.jsonc"
+        );
+        let on_disk = std::fs::read_to_string(re.path).unwrap();
+        assert!(on_disk.contains("https://opencode.ai/config.json"));
     }
 }

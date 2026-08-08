@@ -90,26 +90,30 @@ pub struct App {
     pub log: Vec<String>,
     /// Shared live catalog fed by the background model fetcher task.
     shared_catalog: std::sync::Arc<tokio::sync::RwLock<std::collections::HashSet<String>>>,
+    /// Per-endpoint fetch report channel; drained by the event loop each tick.
+    fetch_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    fetch_tx: tokio::sync::mpsc::UnboundedSender<String>,
     /// Guards against re-logging the same fetch merge repeatedly.
     fetch_logged: bool,
 }
 
 impl App {
     pub fn new(agents: Vec<AgentFile>, project_root: PathBuf) -> Self {
-        let mut config = None;
-        if let Ok(Some(c)) = JsoncConfig::load(&project_root) {
-            config = Some(c);
-        }
-        let config_items = config
-            .as_ref()
-            .and_then(|c| c.config_items().ok())
-            .unwrap_or_default();
+        let (config_items, config) = match JsoncConfig::ensure_loaded(&project_root) {
+            Ok(c) => (c.config_items().unwrap_or_default(), Some(c)),
+            Err(e) => {
+                let mut log = Vec::new();
+                log.push(format!("[config] load failed: {e}"));
+                (Vec::new(), None)
+            }
+        };
         // Boot with the static Anthropic catalog; live fetches merge in later
         // when the async refresh completes (services::model_fetcher).
         let picker_items: Vec<String> = crate::services::model_fetcher::ANTHROPIC_NATIVE_MODELS
             .iter()
             .map(|s| s.to_string())
             .collect();
+        let (fetch_tx, fetch_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = Self {
             agents,
             cursor: 0,
@@ -128,6 +132,8 @@ impl App {
             shared_catalog: std::sync::Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashSet::new(),
             )),
+            fetch_rx,
+            fetch_tx,
             fetch_logged: false,
         };
         app.spawn_catalog_fetch();
@@ -152,6 +158,7 @@ impl App {
             return;
         }
         let shared = self.shared_catalog.clone();
+        let report_tx = self.fetch_tx.clone();
         // Read API key pointer if exposed via config (env var name). Currently
         // heuristic (TODO Phase 2 polish): look for any *_api_key env name.
         let api_key_env = self
@@ -162,13 +169,22 @@ impl App {
             .filter(|v| !v.is_empty());
         tokio::spawn(async move {
             let results = model_fetcher::refresh_catalog(urls, shared, api_key_env).await;
-            tracing::info!(?results, "model catalog refresh finished");
+            for (base, r) in results {
+                let line = match r {
+                    Ok(n) => format!("[model-fetch] {base}: +{n} models"),
+                    Err(e) => format!("[model-fetch ERROR] {base}: {e}"),
+                };
+                let _ = report_tx.send(line);
+            }
         });
     }
 
     /// Merge shared live results into the picker-visible catalog (deduped,
-    /// sorted). Only logs once per change batch.
+    /// sorted) and drain the per-endpoint report channel into the log.
     pub fn sync_catalog_from_shared(&mut self) {
+        while let Ok(line) = self.fetch_rx.try_recv() {
+            self.log_push(line);
+        }
         let snap = match self.shared_catalog.try_read() {
             Ok(g) => g.clone(),
             Err(_) => return,
@@ -182,16 +198,16 @@ impl App {
         set.extend(snap);
         let mut merged: Vec<String> = set.into_iter().collect();
         merged.sort();
-        if merged.len() != before || merged != self.picker_catalog {
+        if merged != self.picker_catalog {
             self.picker_catalog = merged;
             self.reload_picker_view();
-            if !self.fetch_logged {
-                self.log(format!(
-                    "{} live model(s) merged into catalog",
-                    self.picker_catalog.len()
-                ));
-                self.fetch_logged = true;
-            }
+        }
+        if self.picker_catalog.len() != before && !self.fetch_logged {
+            self.log(format!(
+                "{} live model(s) merged into catalog",
+                self.picker_catalog.len()
+            ));
+            self.fetch_logged = true;
         }
     }
 

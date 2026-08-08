@@ -38,7 +38,8 @@
 - [x] **[P1]** Implement async worker function `fetch_v1_models(base_url, api_key)` using `reqwest`. *10s timeout, Bearer auth, typed FetchError.*
 - [x] **[P1]** Build model catalog cache layer storing fetched model strings. *`Arc<RwLock<HashSet<String>>>` shared catalog; App merges on change (dedup+sort).*
 - [x] **[P2]** Implement static fallback list for Anthropic native endpoints. *`ANTHROPIC_NATIVE_MODELS` boots picker; merged with live results.*
-- [ ] **[P2]** Add connection timeout and user-friendly error display in TUI log panel for offline endpoints. *Fetch errors routed to tracing for now; per-endpoint log-pane lines pending.*
+- [x] **[P2]** Add connection timeout and user-friendly error display in TUI log panel for offline endpoints. *Per-endpoint FetchError strings emitted into the footer log via a dedicated mpsc channel; catalog merges on success, doesn't clobber working entries on failure.*
+- [x] **[P2]** JSONC path fallback: `JsoncConfig::ensure_loaded` returns defaults on first run and persists via atomic write (covers "no opencode.jsonc yet" case).
 
 ## 5. Process Supervision & Automation
 - [ ] **[P1]** Implement `ProcessManager` struct using `tokio::process`.
