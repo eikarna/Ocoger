@@ -49,6 +49,14 @@ async fn main() -> anyhow::Result<()> {
         Err(e) => tracing::warn!(error = %e, "agent scan failed"),
     }
     tracing::info!(count = agents.len(), "agents loaded");
+    for a in &agents {
+        tracing::info!(
+            agent = %a.path.display(),
+            model = %a.frontmatter.model,
+            selected = a.is_selected,
+            "loaded agent"
+        );
+    }
 
     let app = ui::app::App::new(agents, project);
     ui::event_handler::run(app).await?;

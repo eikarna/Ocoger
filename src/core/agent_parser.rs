@@ -42,6 +42,8 @@ pub struct AgentFile {
     pub frontmatter: AgentFrontmatter,
     pub raw_body: String,
     pub is_selected: bool,
+    /// True after `update_models` until a successful `save` (drives the `[*]` badge).
+    pub is_dirty: bool,
     /// Raw YAML slice (not in ARCH sketch; required for fidelity-preserving save).
     pub(crate) raw_yaml: String,
 }
@@ -49,6 +51,9 @@ pub struct AgentFile {
 impl AgentFile {
     /// Apply frontmatter edits via the same splice path as `ParsedAgent`.
     pub fn update_models(&mut self, fields: &[(String, String)]) {
+        if fields.is_empty() {
+            return;
+        }
         let mut parsed = ParsedAgent {
             frontmatter: self.frontmatter.clone(),
             raw_yaml: self.raw_yaml.clone(),
@@ -57,16 +62,20 @@ impl AgentFile {
         parsed.update_models(fields);
         self.frontmatter = parsed.frontmatter;
         self.raw_yaml = parsed.raw_yaml;
+        self.is_dirty = true;
     }
 
     /// Persist atomically (ARCH §4.1), preserving body + YAML fidelity.
-    pub fn save(&self) -> std::io::Result<()> {
+    /// Clears `is_dirty` on success.
+    pub fn save(&mut self) -> std::io::Result<()> {
         let parsed = ParsedAgent {
             frontmatter: self.frontmatter.clone(),
             raw_yaml: self.raw_yaml.clone(),
             raw_body: self.raw_body.clone(),
         };
-        super::fs_util::atomic_write(&self.path, &serialize_agent(&parsed))
+        super::fs_util::atomic_write(&self.path, &serialize_agent(&parsed))?;
+        self.is_dirty = false;
+        Ok(())
     }
 }
 
@@ -145,6 +154,7 @@ pub fn load_agent(path: &std::path::Path) -> Result<AgentFile, ParseError> {
         raw_yaml: parsed.raw_yaml,
         raw_body: parsed.raw_body,
         is_selected: false,
+        is_dirty: false,
     })
 }
 
