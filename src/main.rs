@@ -32,6 +32,25 @@ fn init_logging() {
 async fn main() -> anyhow::Result<()> {
     init_logging();
     let cli = Cli::parse();
-    tracing::info!(project = %cli.project.display(), "ocoger starting");
+    let project = cli.project.canonicalize().unwrap_or(cli.project);
+    tracing::info!(project = %project.display(), "ocoger starting");
+
+    // Scan .opencode/agents/*.md then parse each one; log but continue on errors.
+    let mut agents = Vec::new();
+    match core::agent_scanner::scan_agents(&project) {
+        Ok(paths) => {
+            for p in paths {
+                match core::agent_parser::load_agent(&p) {
+                    Ok(a) => agents.push(a),
+                    Err(e) => tracing::warn!(path = %p.display(), error = %e, "skipping bad agent"),
+                }
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "agent scan failed"),
+    }
+    tracing::info!(count = agents.len(), "agents loaded");
+
+    let app = ui::app::App::new(agents, project);
+    ui::event_handler::run(app).await?;
     Ok(())
 }

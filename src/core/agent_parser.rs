@@ -13,7 +13,15 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Keys the MVU editor is allowed to mutate. Restricts key-injection.
+/// Command strings come from hardcoded UI, never Punkte input; this whitelist
+/// is a defense-in-depth guard + documents the allowed set. Kept alive in
+/// release via the debug_assert + the doc reference below.
 pub const EDITABLE_KEYS: &[&str] = &["model", "temperature", "top_k", "top_p", "reasoning_effort"];
+
+// Reference the whitelist so rustc's dead-code analysis treats it as used in
+// release builds (debug_assert! is compiled out there). This is the documented
+// enforcement set for `ParsedAgent::update_models`.
+const _: &[&str] = EDITABLE_KEYS;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentFrontmatter {
@@ -35,7 +43,7 @@ pub struct AgentFile {
     pub raw_body: String,
     pub is_selected: bool,
     /// Raw YAML slice (not in ARCH sketch; required for fidelity-preserving save).
-    raw_yaml: String,
+    pub(crate) raw_yaml: String,
 }
 
 impl AgentFile {

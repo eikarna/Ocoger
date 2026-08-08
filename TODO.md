@@ -24,7 +24,7 @@
 - [x] **[P1]** Implement JSONC config reader and writer for `opencode.jsonc` in `src/core/jsonc_config.rs`. *`JsoncConfig`: load (`.jsonc` over `.json`), `value()`/`model()` typed read via `parse_to_serde_value`, surgical `set_model`/`set_top_level_str` via CST `set_value`/`append`, `save()` via atomic write (ARCH §4.1).*
 - [x] **[P1]** Unit test: Ensure comments and trailing commas in `opencode.jsonc` remain intact after mutation. *`comments_and_formatting_survive_mutation` asserts byte-exact replacement of just the value string; append path verified to preserve comments; invalid JSONC rejected.*
 - [x] **[P1]** Atomic file persistence helper `core::fs_util::atomic_write` (tmp sibling + rename; ARCH §4.1), incl. Windows rename-over-existing test.
-- [x] **[P1]** Agent mutation + save path: `ParsedAgent::update_models`/`set_model` splice-edit raw YAML preserving comments + columns; missing keys append. `AgentFile::save` via `atomic_write`; `load_agent` read→parse→editable view. *(regex value-group trims trailing ` # comment` to preserve anchors — caught by failing test before fix).*
+- [x] **[P1]** Agent mutation + save path: `ParsedAgent::update_models`/`set_model` splice-edit raw YAML preserving comments + columns; missing keys append. `AgentFile::save` via `atomic_write`; `load_agent` read→parse→editable view. *(regex value-group trims trailing ` # comment` to preserve anchors — caught by failing test before fix; `EDITABLE_KEYS` referenced in `parse_agent` so release builds don’t false-positive as dead code).*
 
 ## 3. Terminal User Interface (Ratatui)
 - [ ] **[P0]** Build main application layout (Header, Agent List Pane, Parameter Form Pane, Log Bar).
