@@ -21,8 +21,9 @@
 - [x] **[P0]** Implement `AgentFile` struct and `.opencode/agents/` file scanner in `src/core/agent_scanner.rs`. *(non-recursive for MVP; recursion P2)*
 - [x] **[P0]** Build frontmatter parser wrapper around `gray_matter` in `src/core/agent_parser.rs`. *Design: split-at-delimiter fidelity — returns original raw YAML slice verbatim; avoids reserialization key-order/comment drift. `ParsedAgent` holds raw yaml + body.*
 - [x] **[P0]** Unit test: Verify parsing and re-writing YAML frontmatter preserves exact Markdown body text. *Strengthened: fixture asserts byte-identical body **and** raw YAML (comments, key order) — catches beta fidelity risk beyond PRD's body-only contract.*
-- [ ] **[P1]** Implement JSONC config reader and writer for `opencode.jsonc` in `src/core/jsonc_config.rs`.
-- [ ] **[P1]** Unit test: Ensure comments and trailing commas in `opencode.jsonc` remain intact after mutation.
+- [x] **[P1]** Implement JSONC config reader and writer for `opencode.jsonc` in `src/core/jsonc_config.rs`. *`JsoncConfig`: load (`.jsonc` over `.json`), `value()`/`model()` typed read via `parse_to_serde_value`, surgical `set_model`/`set_top_level_str` via CST `set_value`/`append`, `save()` via atomic write (ARCH §4.1).*
+- [x] **[P1]** Unit test: Ensure comments and trailing commas in `opencode.jsonc` remain intact after mutation. *`comments_and_formatting_survive_mutation` asserts byte-exact replacement of just the value string; append path verified to preserve comments; invalid JSONC rejected.*
+- [x] **[P1]** Atomic file persistence helper `core::fs_util::atomic_write` (tmp sibling + rename; ARCH §4.1), incl. Windows rename-over-existing test.
 
 ## 3. Terminal User Interface (Ratatui)
 - [ ] **[P0]** Build main application layout (Header, Agent List Pane, Parameter Form Pane, Log Bar).
