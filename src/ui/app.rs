@@ -3,6 +3,7 @@
 //! `Action`s and re-renders.
 
 use crate::core::agent_parser::AgentFile;
+use crate::core::jsonc_config::{ConfigItem, JsoncConfig};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,9 +11,19 @@ pub enum Mode {
     List,
     /// Batch model input modal (PRD FE-1.3). Value staged in `modal_input`.
     ModelEdit,
+    /// Form editing: agent params + global config (single shared cursor).
+    Form,
+    /// Model picker with live-filter (Phase 2 FE-3.3).
+    Picker,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Panel {
+    AgentParams,
+    GlobalConfig,
+}
+
+#[derive(Debug, Clone)]
 pub enum Action {
     MoveDown,
     MoveUp,
@@ -20,6 +31,15 @@ pub enum Action {
     SelectAll,
     DeselectAll,
     OpenModelModal,
+    OpenForm,
+    OpenPicker,
+    FormMove(bool),
+    FormModify(i32),
+    FormApply,
+    FormExit,
+    PickerInput(char),
+    PickerBackspace,
+    PickerAccept,
     /// Append chars to the staged model string (modal only).
     ModalInput(char),
     /// Pop one char from the staged model string (modal only).
@@ -40,14 +60,37 @@ pub struct App {
     pub should_quit: bool,
     pub project_root: PathBuf,
     pub mode: Mode,
-    /// Staged model string while in `ModelEdit` mode.
+    /// Staged string while in `ModelEdit` or `Picker` mode.
     pub modal_input: String,
+    /// Form band (agent params vs global config) whose cursor is active.
+    pub form_band: Panel,
+    /// Current row index within the active band.
+    pub form_cursor: usize,
+    /// Global config rows + CST editor handle (None when no config file on disk).
+    pub config_items: Vec<ConfigItem>,
+    pub config: Option<JsoncConfig>,
+    /// Catalog for the picker (static fallback + fetched).
+    pub picker_catalog: Vec<String>,
+    /// Filtered view of picker_catalog for rendering.
+    pub picker_items: Vec<String>,
+    /// Picker row after live filter.
+    pub picker_cursor: usize,
     /// Rolling status/messages for the footer log line.
     pub log: Vec<String>,
 }
 
 impl App {
     pub fn new(agents: Vec<AgentFile>, project_root: PathBuf) -> Self {
+        // Catalog staged per-provider at boot or via the fetcher; for now empty
+        // until FE-3/Phase 2 fetcher wires real results.
+        let mut config = None;
+        if let Ok(Some(c)) = JsoncConfig::load(&project_root) {
+            config = Some(c);
+        }
+        let config_items = config
+            .as_ref()
+            .and_then(|c| c.config_items().ok())
+            .unwrap_or_default();
         Self {
             agents,
             cursor: 0,
@@ -55,6 +98,13 @@ impl App {
             project_root,
             mode: Mode::List,
             modal_input: String::new(),
+            form_band: Panel::AgentParams,
+            form_cursor: 0,
+            config_items,
+            config,
+            picker_catalog: Vec::new(),
+            picker_items: Vec::new(),
+            picker_cursor: 0,
             log: Vec::new(),
         }
     }
@@ -80,32 +130,85 @@ impl App {
     }
 
     pub fn update(&mut self, action: Action) {
+        let _typed = !self.modal_input.trim().is_empty();
+
         use Action::*;
         match action {
-            MoveDown | MoveUp => {
+            MoveDown | MoveUp => match self.mode {
+                Mode::List => self.move_cursor(matches!(action, MoveDown)),
+                Mode::Form => {
+                    let n = self.form_item_count();
+                    if n > 0 {
+                        self.form_cursor = if matches!(action, MoveDown) {
+                            (self.form_cursor + 1) % n
+                        } else {
+                            (self.form_cursor + n - 1) % n
+                        };
+                    }
+                }
+                Mode::ModelEdit | Mode::Picker => {}
+            },
+            OpenForm => {
                 if self.mode == Mode::List {
-                    self.move_cursor(action == MoveDown)
+                    self.form_band = Panel::AgentParams;
+                    self.form_cursor = 0;
+                    self.mode = Mode::Form;
                 }
             }
-            ToggleSelectCurrent => {
-                if self.mode == Mode::List {
-                    self.toggle()
-                }
-            }
-            SelectAll => {
-                if self.mode == Mode::List {
-                    self.set_all(true)
-                }
-            }
-            DeselectAll => {
-                if self.mode == Mode::List {
-                    self.set_all(false)
-                }
-            }
-            OpenModelModal => {
-                if self.mode == Mode::List && self.selected_count() > 0 {
+            OpenPicker => match self.mode {
+                Mode::List if self.selected_count() > 0 && !self.picker_catalog.is_empty() => {
                     self.modal_input.clear();
-                    self.mode = Mode::ModelEdit;
+                    self.picker_cursor = 0;
+                    self.mode = Mode::Picker;
+                }
+                Mode::Form => {
+                    if self.picker_catalog.is_empty() {
+                        self.log(
+                            "Model catalog is empty; fetch models first (Phase 2 fetcher)"
+                                .to_string(),
+                        );
+                    }
+                    // Entering picker from Form only makes sense on the model band. Keep
+                    // mode unchanged; UI can still show filtered catalog if desired.
+                }
+                _ => {}
+            },
+            FormMove(next) => {
+                if self.mode != Mode::Form {
+                    return;
+                }
+                let n = self.form_item_count();
+                if n > 0 {
+                    self.form_cursor = if next {
+                        (self.form_cursor + 1) % n
+                    } else {
+                        (self.form_cursor + n - 1) % n
+                    };
+                }
+            }
+            FormModify(d) => self.modify_form_cursor(d),
+            FormApply => {} // reserved for two-step (currently edits apply immediately)
+            FormExit => {
+                if self.mode == Mode::Form {
+                    self.mode = Mode::List;
+                }
+            }
+            PickerInput(c) => {
+                if self.mode == Mode::Picker {
+                    self.modal_input.push(c);
+                    self.reload_picker_view();
+                }
+            }
+            PickerBackspace => {
+                if self.mode == Mode::Picker {
+                    self.modal_input.pop();
+                    self.reload_picker_view();
+                }
+            }
+            PickerAccept => {
+                if self.mode == Mode::Picker {
+                    self.picker_apply_selection();
+                    self.mode = Mode::List;
                 }
             }
             ModalInput(c) => {
@@ -124,15 +227,37 @@ impl App {
                     self.mode = Mode::List;
                 }
             }
-            CancelModal => {
-                if self.mode == Mode::ModelEdit {
+            OpenModelModal => {
+                if self.mode == Mode::List && self.selected_count() > 0 {
                     self.modal_input.clear();
-                    self.mode = Mode::List;
+                    self.mode = Mode::ModelEdit;
+                }
+            }
+            ToggleSelectCurrent => {
+                if self.mode == Mode::List {
+                    self.toggle()
+                }
+            }
+            SelectAll => {
+                if self.mode == Mode::List {
+                    self.set_all(true)
+                }
+            }
+            DeselectAll => {
+                if self.mode == Mode::List {
+                    self.set_all(false)
                 }
             }
             Save => {
                 if self.mode == Mode::List {
                     self.save_dirty();
+                }
+            }
+            CancelModal => {
+                // Discard staged input for ModelEdit or Picker.
+                if matches!(self.mode, Mode::ModelEdit | Mode::Picker) {
+                    self.modal_input.clear();
+                    self.mode = Mode::List;
                 }
             }
             Quit => {
@@ -148,6 +273,110 @@ impl App {
             }
             Noop => {}
         }
+    }
+
+    pub fn form_item_count(&self) -> usize {
+        match self.form_band {
+            Panel::AgentParams => 5, // model, temperature, top_k, top_p, reasoning_effort
+            Panel::GlobalConfig => self.config_items.len(),
+        }
+    }
+
+    fn agent_param_label(idx: usize) -> &'static str {
+        const L: [&str; 5] = ["model", "temperature", "top_k", "top_p", "reasoning_effort"];
+        L.get(idx).copied().unwrap_or("?")
+    }
+
+    /// +/- step on the current form row. Applies to selected agents or the
+    /// global config item immediately (config mutation is CST-preserving).
+    fn modify_form_cursor(&mut self, d: i32) {
+        if self.mode != Mode::Form || self.form_cursor >= self.form_item_count() {
+            return;
+        }
+        if self.form_band == Panel::GlobalConfig {
+            if let Some(err) = self.config_set_current_value(d) {
+                self.log(err);
+            }
+            return;
+        }
+        // Agent parameters.
+        let key = Self::agent_param_label(self.form_cursor);
+        let step_map: &[(&str, &str)] = match key {
+            "temperature" => &[("0.1", "0.1")],
+            "top_p" => &[("0.05", "0.05")],
+            _ => &[],
+        };
+        let Some(step_str) = step_map.iter().find(|(k, _)| *k == key).map(|(_, s)| s) else {
+            // keys not editable with +/- (model/top_k/reasoning_effort handled via picker/typing)
+            return;
+        };
+        let step: f32 = step_str.parse().unwrap_or(0.0);
+        let cur = self
+            .agents
+            .get(self.cursor)
+            .and_then(|a| match key {
+                "temperature" => a.frontmatter.temperature,
+                "top_p" => a.frontmatter.top_p,
+                _ => None,
+            })
+            .unwrap_or_else(|| if key == "top_p" { 0.9 } else { 0.2 });
+        let new_val = ((cur + d as f32 * step) * 100.0).round() / 100.0;
+        let clamped = if key == "temperature" {
+            new_val.clamp(0.0, 2.0)
+        } else {
+            new_val.clamp(0.0, 1.0)
+        };
+        let formatted = format!("{clamped:.2}");
+        let fields = [(key.to_string(), formatted.clone())];
+        let target = self.agents.iter_mut().filter(|a| a.is_selected);
+        for a in target {
+            a.update_models(&fields);
+        }
+        self.log(format!(
+            "Set {key}={formatted} for selected agents (press s to save)"
+        ));
+    }
+
+    fn config_set_current_value(&mut self, d: i32) -> Option<String> {
+        let item = self.config_items.get(self.form_cursor)?.clone();
+        if let Some(cfg) = self.config.as_mut() {
+            // single-char preview → better to have a small +/- helper for now.
+            let cur: i32 = item.value.parse().unwrap_or(0);
+            let new_val = (cur + d).to_string();
+            if let Err(e) = cfg.set_nested_str(item.keypath.iter().map(|s| s.as_str()), &new_val) {
+                return Some(format!("config set {} failed: {e}", item.label));
+            }
+        }
+        self.config_items = self.config.as_ref()?.config_items().ok()?;
+        None
+    }
+
+    fn reload_picker_view(&mut self) {
+        let filter = self.modal_input.to_lowercase();
+        self.picker_items = self
+            .picker_catalog
+            .iter()
+            .filter(|m| filter.is_empty() || m.to_lowercase().contains(&filter))
+            .cloned()
+            .collect();
+        if self.picker_cursor >= self.picker_items.len() && !self.picker_items.is_empty() {
+            self.picker_cursor = self.picker_items.len() - 1;
+        }
+    }
+
+    fn picker_apply_selection(&mut self) {
+        let Some(model) = self.picker_items.get(self.picker_cursor).cloned() else {
+            self.log("Picker catalogue empty".to_string());
+            return;
+        };
+        let fields = vec![("model".to_string(), model.clone())];
+        for a in self.agents.iter_mut().filter(|a| a.is_selected) {
+            a.update_models(&fields);
+        }
+        self.log(format!(
+            "Staged model '{model}' on {} agent(s) via picker (press s to save)",
+            self.selected_count()
+        ));
     }
 
     fn move_cursor(&mut self, down: bool) {

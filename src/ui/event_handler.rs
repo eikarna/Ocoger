@@ -12,7 +12,7 @@ use std::io;
 use std::time::Duration;
 
 use crate::ui::app::{Action, App, Mode};
-use crate::ui::widgets::agent_list;
+use crate::ui::widgets::{agent_list, form, picker};
 
 /// Run the TUI until the user quits. Restores the terminal on all exits.
 pub async fn run(mut app: App) -> io::Result<()> {
@@ -40,30 +40,40 @@ fn event_loop(
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // header
-                    Constraint::Min(3),    // agent list
-                    Constraint::Length(6), // footer (log + hints)
+                    Constraint::Min(3),    // content
+                    Constraint::Length(6), // footer
                 ])
                 .split(f.area());
 
             let header = format!(
-                " ocoger :: {} agent(s) | {} selected | {} unsaved ",
+                " ocoger :: {} agent(s) | {} selected | {} unsaved | mode: {:?} ",
                 app.agents.len(),
                 app.selected_count(),
-                app.dirty_count()
+                app.dirty_count(),
+                app.mode
             );
             f.render_widget(ratatui::widgets::Paragraph::new(header), chunks[0]);
 
-            agent_list::render(f, chunks[1], &app.agents, app.cursor);
-            agent_list::render_bottom(f, chunks[2], &app.log);
-
-            if app.mode == Mode::ModelEdit {
-                agent_list::render_modal(
-                    f,
-                    f.area(),
-                    &app.modal_input,
-                    app.selected_count(),
-                );
+            match app.mode {
+                Mode::List | Mode::ModelEdit => {
+                    agent_list::render(f, chunks[1], &app.agents, app.cursor);
+                    if app.mode == Mode::ModelEdit {
+                        agent_list::render_modal(
+                            f,
+                            f.area(),
+                            &app.modal_input,
+                            app.selected_count(),
+                        );
+                    }
+                }
+                Mode::Form => form::render(f, chunks[1], app),
+                Mode::Picker => {
+                    agent_list::render(f, chunks[1], &app.agents, app.cursor);
+                    picker::render(f, f.area(), app);
+                }
             }
+
+            agent_list::render_bottom(f, chunks[2], &app.log);
         })?;
 
         if event::poll(Duration::from_millis(16))? {
@@ -86,15 +96,38 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Char(c) => Action::ModalInput(c),
             _ => Action::Noop,
         },
-        Mode::List => match (key.code, key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)) {
+        Mode::Picker => match key.code {
+            KeyCode::Esc => Action::CancelModal,
+            KeyCode::Enter => Action::PickerAccept,
+            KeyCode::Backspace => Action::PickerBackspace,
+            KeyCode::Char(c) => Action::PickerInput(c),
+            _ => Action::Noop,
+        },
+        Mode::Form => match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => Action::FormExit,
+            KeyCode::Char('j') | KeyCode::Down => Action::FormMove(true),
+            KeyCode::Char('k') | KeyCode::Up => Action::FormMove(false),
+            KeyCode::Tab => Action::FormExit, // Tab switches back to list for now
+            KeyCode::Char('e') | KeyCode::Char('g') => Action::FormExit,
+            KeyCode::Char('+') | KeyCode::Char('=') => Action::FormModify(1),
+            KeyCode::Char('-') => Action::FormModify(-1),
+            KeyCode::Enter => Action::FormApply,
+            _ => Action::Noop,
+        },
+        Mode::List => match (
+            key.code,
+            key.modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL),
+        ) {
             (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => Action::Quit,
-            // PRD: s or Ctrl+S both trigger save.
             (KeyCode::Char('s'), _) => Action::Save,
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Action::MoveDown,
             (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Action::MoveUp,
             (KeyCode::Char(' '), _) => Action::ToggleSelectCurrent,
             (KeyCode::Char('a'), _) => app.toggle_all_action(),
             (KeyCode::Char('m'), _) => Action::OpenModelModal,
+            (KeyCode::Char('p'), _) => Action::OpenPicker,
+            (KeyCode::Char('e'), _) | (KeyCode::Char('g'), _) => Action::OpenForm,
             _ => Action::Noop,
         },
     };

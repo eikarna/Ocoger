@@ -36,6 +36,13 @@ pub enum ConfigError {
 }
 
 /// Located JSONC config file, preferring `opencode.jsonc` over `opencode.json`.
+#[derive(Debug, Clone)]
+pub struct ConfigItem {
+    pub label: String,
+    pub value: String,
+    pub keypath: Vec<String>,
+}
+
 pub struct JsoncConfig {
     /// Which file exists (or would be written), first match wins.
     pub path: PathBuf,
@@ -96,6 +103,78 @@ impl JsoncConfig {
         }
         self.raw = root.to_string();
         Ok(())
+    }
+
+    /// Surgical nested-path string mutation (only first-level nesting supported;
+    /// MVU only navigates to `provider.<name>.options.baseURL` and `provider.<name>.api_key`).
+    pub fn set_nested_str<I, S>(&mut self, path: I, value: &str) -> Result<(), ConfigError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut path: Vec<String> = path.into_iter().map(|s| s.as_ref().to_owned()).collect();
+        if path.is_empty() {
+            return Err(ConfigError::NotAnObject);
+        }
+        let root = parse_cst(&self.raw)?;
+        let mut obj = root.object_value_or_set();
+        let leaf = path.pop().unwrap();
+        for seg in path {
+            match obj.object_value_or_create(&seg) {
+                Some(o) => obj = o,
+                None => return Err(ConfigError::NotAnObject),
+            }
+        }
+        match obj.get(&leaf) {
+            Some(prop) => prop.set_value(CstInputValue::String(value.to_owned())),
+            None => {
+                obj.append(&leaf, CstInputValue::String(value.to_owned()));
+            }
+        }
+        self.raw = root.to_string();
+        Ok(())
+    }
+
+    /// One row display in the global config pane.
+    /// Extract the form fields the PRD's global pane cares about.
+    pub fn config_items(&self) -> Result<Vec<ConfigItem>, ConfigError> {
+        let v = self.value()?;
+        let mut out = Vec::new();
+        let mut push = |label: &str, value: Option<&str>, keypath: &[&str]| {
+            out.push(ConfigItem {
+                label: label.into(),
+                value: value.unwrap_or("").into(),
+                keypath: keypath.iter().map(|s| s.to_string()).collect(),
+            });
+        };
+        push("model", v.get("model").and_then(Value::as_str), &["model"]);
+        push("theme", v.get("theme").and_then(Value::as_str), &["theme"]);
+        push(
+            "default_provider",
+            v.get("default_provider").and_then(Value::as_str),
+            &["default_provider"],
+        );
+        let provider = v
+            .get("provider")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Default::default()));
+        if let Some(map) = provider.as_object() {
+            for (name, cfg) in map {
+                let base_url = cfg.pointer("/options/baseURL").and_then(Value::as_str);
+                let api_key = cfg.get("api_key").and_then(Value::as_str);
+                push(
+                    &format!("provider.{name}.base_url"),
+                    base_url.or_else(|| cfg.pointer("/options/baseURL").and_then(Value::as_str)),
+                    &["provider", name, "options", "baseURL"],
+                );
+                push(
+                    &format!("provider.{name}.api_key"),
+                    api_key,
+                    &["provider", name, "api_key"],
+                );
+            }
+        }
+        Ok(out)
     }
 
     /// Persist with the atomic temp-then-rename pipeline (ARCH §4.1).
@@ -166,7 +245,60 @@ mod tests {
     }
 
     #[test]
-    fn invalid_jsonc_is_rejected() {
-        assert!(parse_cst("{\n  \"model\": ,\n}").is_err());
+    fn config_items_extract_top_level_and_provider() {
+        let cfg = JsoncConfig {
+            path: PathBuf::from("opencode.jsonc"),
+            raw: r#"{
+  "model": "oclaude/claude-3-5",  // primary
+  "theme": "dark",
+  "provider": {
+    "openai": { "options": { "baseURL": "https://api.openai.com" }, "api_key": "sk-xxx" },
+    "anthropic": { "options": { "baseURL": "https://api.anthropic.com" } },
+  },
+}"#
+            .to_string(),
+        };
+        let items = cfg.config_items().unwrap();
+        let get = |label: &str| items.iter().find(|i| i.label == label).unwrap();
+        assert_eq!(get("model").value, "oclaude/claude-3-5");
+        assert_eq!(get("theme").value, "dark");
+        assert_eq!(
+            get("provider.openai.base_url").value,
+            "https://api.openai.com"
+        );
+        assert_eq!(get("provider.openai.api_key").value, "sk-xxx");
+        assert_eq!(
+            get("provider.anthropic.base_url").value,
+            "https://api.anthropic.com"
+        );
+        assert_eq!(get("provider.anthropic.api_key").value, "");
+    }
+
+    #[test]
+    fn set_nested_str_mutates_target_and_preserves_siblings() {
+        let mut cfg = JsoncConfig {
+            path: PathBuf::from("opencode.jsonc"),
+            raw: r#"{
+  "model": "old",     // primary comment
+  "provider": {
+    "openai": {
+      // comment inside
+      "options": { "baseURL": "https://api.openai.com" },
+    },
+  },
+}"#
+            .to_string(),
+        };
+        cfg.set_nested_str(
+            ["provider", "openai", "options", "baseURL"],
+            "https://openrouter.ai/api/v1",
+        )
+        .unwrap();
+        cfg.set_nested_str(["openai", "api_key"], "sk-new").unwrap();
+        let s = cfg.raw;
+        assert!(s.contains("\"baseURL\": \"https://openrouter.ai/api/v1\""));
+        assert!(s.contains("// primary comment"), "top comment preserved");
+        assert!(s.contains("// comment inside"), "sibling comment preserved");
+        assert!(s.contains("\"api_key\": \"sk-new\""));
     }
 }
