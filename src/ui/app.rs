@@ -81,8 +81,6 @@ pub struct App {
 
 impl App {
     pub fn new(agents: Vec<AgentFile>, project_root: PathBuf) -> Self {
-        // Catalog staged per-provider at boot or via the fetcher; for now empty
-        // until FE-3/Phase 2 fetcher wires real results.
         let mut config = None;
         if let Ok(Some(c)) = JsoncConfig::load(&project_root) {
             config = Some(c);
@@ -91,6 +89,12 @@ impl App {
             .as_ref()
             .and_then(|c| c.config_items().ok())
             .unwrap_or_default();
+        // Boot with the static Anthropic catalog; live fetches merge in later
+        // when the async refresh completes (services::model_fetcher).
+        let picker_items: Vec<String> = crate::services::model_fetcher::ANTHROPIC_NATIVE_MODELS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         Self {
             agents,
             cursor: 0,
@@ -102,8 +106,8 @@ impl App {
             form_cursor: 0,
             config_items,
             config,
-            picker_catalog: Vec::new(),
-            picker_items: Vec::new(),
+            picker_catalog: picker_items.clone(),
+            picker_items,
             picker_cursor: 0,
             log: Vec::new(),
         }
@@ -582,5 +586,38 @@ mod tests {
         assert!(disk_a.contains("model: openai/gpt-9"));
         let disk_b = std::fs::read_to_string(dir.join("b.md")).unwrap();
         assert!(disk_b.contains("model: m2"), "unselected agent untouched");
+    }
+
+    #[test]
+    fn picker_boots_with_anthropic_fallback_and_filters() {
+        let app = App::new(vec![agent("a")], PathBuf::from("."));
+        assert!(!app.picker_catalog.is_empty(), "boot populates fallback");
+        assert!(app.picker_catalog.iter().any(|m| m.contains("claude")));
+        assert_eq!(app.picker_items.len(), app.picker_catalog.len());
+    }
+
+    #[test]
+    fn picker_filter_narrows_then_accept_applies_to_selected() {
+        let mut app = App::new(vec![agent("a")], PathBuf::from("."));
+        app.agents[0].is_selected = true;
+        app.update(Action::OpenPicker);
+        assert_eq!(app.mode, Mode::Picker);
+        // filter to "opus"
+        for c in "opus".chars() {
+            app.update(Action::PickerInput(c));
+        }
+        assert!(
+            app.picker_items.iter().all(|m| m.contains("opus")),
+            "filter applied"
+        );
+        assert_eq!(
+            app.picker_items.len(),
+            1,
+            "exactly one opus model in static list"
+        );
+        app.update(Action::PickerAccept);
+        assert_eq!(app.mode, Mode::List);
+        assert!(app.agents[0].frontmatter.model.contains("opus"));
+        assert!(app.agents[0].is_dirty, "pick stages a dirty edit");
     }
 }
