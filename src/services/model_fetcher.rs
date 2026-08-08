@@ -91,19 +91,37 @@ pub async fn refresh_catalog(
         let base = base.clone();
         let client = client.clone();
         let key = api_key.clone();
+        let catalog = catalog.clone();
         handles.push(tokio::spawn(async move {
-            fetch_v1_models(&client, &base, key.as_deref())
-                .await
-                .map(|v| (base, v.len()))
+            match fetch_one_with_base(&client, &base, key.as_deref()).await {
+                Ok((b, ids)) => {
+                    let n = ids.len();
+                    catalog.write().await.extend(ids);
+                    (b.clone(), Ok(n))
+                }
+                Err((b, e)) => (b, Err(e)),
+            }
         }));
     }
     let mut results = Vec::new();
     for h in handles {
         match h.await {
-            Ok(Ok((base, n))) => results.push((base, Ok(n))),
-            Ok(Err(e)) => results.push(("(unknown)".into(), Err(e))),
+            Ok(pair) => results.push(pair),
             Err(e) => results.push(("(spawn)".into(), Err(FetchError::Http(e.to_string())))),
         }
     }
     results
+}
+
+/// Fetch a single provider; on error the first tuple element is the base URL
+/// (so callers can log or display precision-targeted errors).
+pub async fn fetch_one_with_base(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Result<(String, Vec<String>), (String, FetchError)> {
+    fetch_v1_models(client, base_url, api_key)
+        .await
+        .map(|v| (base_url.to_string(), v))
+        .map_err(|e| (base_url.to_string(), e))
 }
