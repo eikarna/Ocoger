@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crate::services::process_manager::ProcessManager;
 use crate::ui::app::{Action, App, Mode};
-use crate::ui::widgets::{agent_list, form, picker};
+use crate::ui::widgets::{agent_list, diff_view, form, picker};
 
 /// Run the TUI until the user quits. Restores the terminal on all exits.
 pub async fn run(mut app: App) -> io::Result<()> {
@@ -95,6 +95,9 @@ async fn event_loop(
                     agent_list::render(f, chunks[1], &app.agents, app.cursor);
                     picker::render(f, f.area(), app);
                 }
+                Mode::Diff => {
+                    diff_view::render(f, f.area(), app.diff_text.as_deref());
+                }
             }
 
             agent_list::render_bottom(f, chunks[2], &app.log);
@@ -173,7 +176,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             (KeyCode::Char('a'), _) => app.toggle_all_action(),
             (KeyCode::Char('m'), _) => Action::OpenModelModal,
             (KeyCode::Char('p'), _) => Action::OpenPicker,
+            (KeyCode::Char('d'), _) => Action::OpenDiff,
             (KeyCode::Char('e'), _) | (KeyCode::Char('g'), _) => Action::OpenForm,
+            _ => Action::Noop,
+        },
+        Mode::Diff => match key.code {
+            KeyCode::Esc | KeyCode::Enter => Action::CloseDiff,
             _ => Action::Noop,
         },
     };

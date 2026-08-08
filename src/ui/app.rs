@@ -15,6 +15,8 @@ pub enum Mode {
     Form,
     /// Model picker with live-filter (Phase 2 FE-3.3).
     Picker,
+    /// Pre-save diff review (PRD §9). Read-only; Enter/Esc closes.
+    Diff,
 }
 
 /// Event-loop async actions the pure `update()` cannot perform itself (spawn/
@@ -40,6 +42,9 @@ pub enum Action {
     SelectAll,
     DeselectAll,
     OpenModelModal,
+    /// Show staged edits as a unified diff (D key; List mode only).
+    OpenDiff,
+    CloseDiff,
     OpenForm,
     OpenPicker,
     FormMove(bool),
@@ -95,6 +100,8 @@ pub struct App {
     fetch_tx: tokio::sync::mpsc::UnboundedSender<String>,
     /// Guards against re-logging the same fetch merge repeatedly.
     fetch_logged: bool,
+    /// Cached pre-save diff text (recomputed on open).
+    pub diff_text: Option<String>,
 }
 
 impl App {
@@ -135,6 +142,7 @@ impl App {
             fetch_rx,
             fetch_tx,
             fetch_logged: false,
+            diff_text: None,
         };
         app.spawn_catalog_fetch();
         app
@@ -262,7 +270,7 @@ impl App {
                         };
                     }
                 }
-                Mode::ModelEdit | Mode::Picker => {}
+                Mode::ModelEdit | Mode::Picker | Mode::Diff => {}
             },
             OpenForm => {
                 if self.mode == Mode::List {
@@ -367,6 +375,26 @@ impl App {
             Save => {
                 if self.mode == Mode::List {
                     self.save_dirty();
+                }
+            }
+            OpenDiff => {
+                if self.mode == Mode::List && self.dirty_count() > 0 {
+                    self.diff_text = Some(
+                        crate::core::diff::agent_diffs(&self.agents, &self.project_root)
+                            .into_iter()
+                            .map(|d| format!("--- {} (staged) ---\n{}", d.file_name, d.diff_text))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    );
+                    self.mode = Mode::Diff;
+                } else {
+                    self.log("nothing to diff (no staged changes)".to_string());
+                }
+            }
+            CloseDiff => {
+                if self.mode == Mode::Diff {
+                    self.diff_text = None;
+                    self.mode = Mode::List;
                 }
             }
             Restart => {
