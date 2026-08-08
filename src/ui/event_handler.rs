@@ -11,6 +11,7 @@ use ratatui::Terminal;
 use std::io;
 use std::time::Duration;
 
+use crate::services::process_manager::ProcessManager;
 use crate::ui::app::{Action, App, Mode};
 use crate::ui::widgets::{agent_list, form, picker};
 
@@ -22,7 +23,9 @@ pub async fn run(mut app: App) -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = event_loop(&mut app, &mut terminal);
+    let mut proc_mgr = ProcessManager::new();
+    let result = event_loop(&mut app, &mut terminal, &mut proc_mgr).await;
+    proc_mgr.shutdown_sync();
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -30,11 +33,25 @@ pub async fn run(mut app: App) -> io::Result<()> {
     result
 }
 
-fn event_loop(
+async fn event_loop(
     app: &mut App,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    proc_mgr: &mut ProcessManager,
 ) -> io::Result<()> {
+    let mut last_proc_state = proc_mgr.state;
     loop {
+        app.sync_catalog_from_shared();
+        for (stream, line) in proc_mgr.drain_output() {
+            app.log_push(format!("[{stream}] {line}"));
+        }
+        if proc_mgr.state != last_proc_state {
+            app.log_push(format!(
+                "process state: {:?} -> {:?}",
+                last_proc_state, proc_mgr.state
+            ));
+            last_proc_state = proc_mgr.state;
+        }
+
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -45,12 +62,19 @@ fn event_loop(
                 ])
                 .split(f.area());
 
+            let proc_lbl = match proc_mgr.state {
+                crate::services::process_manager::ProcState::Running => {
+                    format!("RUNNING pid={:?}", proc_mgr.pid)
+                }
+                s => format!("{:?}", s),
+            };
             let header = format!(
-                " ocoger :: {} agent(s) | {} selected | {} unsaved | mode: {:?} ",
+                " ocoger :: {} agent(s) | {} selected | {} unsaved | mode: {:?} | proc: {} ",
                 app.agents.len(),
                 app.selected_count(),
                 app.dirty_count(),
-                app.mode
+                app.mode,
+                proc_lbl
             );
             f.render_widget(ratatui::widgets::Paragraph::new(header), chunks[0]);
 
@@ -76,11 +100,10 @@ fn event_loop(
             agent_list::render_bottom(f, chunks[2], &app.log);
         })?;
 
-        app.sync_catalog_from_shared();
-
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
-                handle_key(app, key);
+                let action = handle_key(app, key);
+                maybe_restart(proc_mgr, app, action).await;
                 if app.should_quit {
                     return Ok(());
                 }
@@ -89,7 +112,27 @@ fn event_loop(
     }
 }
 
-fn handle_key(app: &mut App, key: KeyEvent) {
+/// If `action` is a process-restarting action (r / save with changes), perform
+/// it and log the result.
+async fn maybe_restart(proc_mgr: &mut ProcessManager, app: &mut App, action: Action) {
+    use Action::*;
+    let want_restart = match action {
+        Restart => true,
+        Save => app.save_and_check_restart(),
+        _ => return,
+    };
+    if !want_restart {
+        return;
+    }
+    let cwd = app.project_root.clone();
+    app.log_push(format!("restarting process (pid={:?})…", proc_mgr.pid));
+    match proc_mgr.restart(&cwd).await {
+        Ok(new_pid) => app.log_push(format!("restarted → pid={new_pid}")),
+        Err(e) => app.log_push(format!("restart failed: {e}")),
+    }
+}
+
+fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     let action = match app.mode {
         Mode::ModelEdit => match key.code {
             KeyCode::Esc => Action::CancelModal,
@@ -109,7 +152,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             KeyCode::Esc | KeyCode::Char('q') => Action::FormExit,
             KeyCode::Char('j') | KeyCode::Down => Action::FormMove(true),
             KeyCode::Char('k') | KeyCode::Up => Action::FormMove(false),
-            KeyCode::Tab => Action::FormExit, // Tab switches back to list for now
+            KeyCode::Tab => Action::FormExit, // TODO Tab pane-switch in later phase
             KeyCode::Char('e') | KeyCode::Char('g') => Action::FormExit,
             KeyCode::Char('+') | KeyCode::Char('=') => Action::FormModify(1),
             KeyCode::Char('-') => Action::FormModify(-1),
@@ -123,6 +166,7 @@ fn handle_key(app: &mut App, key: KeyEvent) {
         ) {
             (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => Action::Quit,
             (KeyCode::Char('s'), _) => Action::Save,
+            (KeyCode::Char('r'), _) => Action::Restart,
             (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Action::MoveDown,
             (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Action::MoveUp,
             (KeyCode::Char(' '), _) => Action::ToggleSelectCurrent,
@@ -133,5 +177,6 @@ fn handle_key(app: &mut App, key: KeyEvent) {
             _ => Action::Noop,
         },
     };
-    app.update(action);
+    app.update(action.clone());
+    action
 }

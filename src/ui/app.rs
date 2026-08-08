@@ -17,6 +17,15 @@ pub enum Mode {
     Picker,
 }
 
+/// Event-loop async actions the pure `update()` cannot perform itself (spawn/
+/// kill are async I/O); returned instead of being executed so `update()`
+/// remains testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartSignal {
+    None,
+    Requested,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
     AgentParams,
@@ -50,6 +59,8 @@ pub enum Action {
     CancelModal,
     /// Save all dirty agents atomically (PRD §4: s / Ctrl+S).
     Save,
+    /// Force-restart process (PRD `r`).
+    Restart,
     Quit,
     Noop,
 }
@@ -342,6 +353,13 @@ impl App {
                     self.save_dirty();
                 }
             }
+            Restart => {
+                // Process restart is handled by the event loop (async I/O);
+                // App only updates the log so the model stays testable/pure.
+                if self.mode == Mode::List {
+                    self.log("restart requested (event loop will handle)".to_string());
+                }
+            }
             CancelModal => {
                 // Discard staged input for ModelEdit or Picker.
                 if matches!(self.mode, Mode::ModelEdit | Mode::Picker) {
@@ -488,6 +506,11 @@ impl App {
         }
     }
 
+    /// Public log-push used by the event loop for process/log wiring.
+    pub fn log_push(&mut self, msg: impl Into<String>) {
+        self.log(msg);
+    }
+
     fn apply_staged_model(&mut self) {
         let model = self.modal_input.trim().to_string();
         if model.is_empty() {
@@ -531,6 +554,15 @@ impl App {
         if ok == 0 && failed.is_empty() {
             self.log("Nothing to save".to_string());
         }
+    }
+
+    /// Save all dirty agents, then signal whether the supervised process
+    /// should be restarted (event loop observes this on `s` / `Ctrl+S`).
+    /// Returns `true` only when at least one file was written.
+    pub fn save_and_check_restart(&mut self) -> bool {
+        let changed = self.dirty_count() > 0;
+        self.save_dirty();
+        changed && self.dirty_count() == 0
     }
 }
 
