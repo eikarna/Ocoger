@@ -77,6 +77,10 @@ pub struct App {
     pub picker_cursor: usize,
     /// Rolling status/messages for the footer log line.
     pub log: Vec<String>,
+    /// Shared live catalog fed by the background model fetcher task.
+    shared_catalog: std::sync::Arc<tokio::sync::RwLock<std::collections::HashSet<String>>>,
+    /// Guards against re-logging the same fetch merge repeatedly.
+    fetch_logged: bool,
 }
 
 impl App {
@@ -95,7 +99,7 @@ impl App {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        Self {
+        let mut app = Self {
             agents,
             cursor: 0,
             should_quit: false,
@@ -110,6 +114,87 @@ impl App {
             picker_items,
             picker_cursor: 0,
             log: Vec::new(),
+            shared_catalog: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashSet::new(),
+            )),
+            fetch_logged: false,
+        };
+        app.spawn_catalog_fetch();
+        app
+    }
+
+    /// Provider base URLs extracted from the loaded config for model fetch.
+    fn provider_base_urls(&self) -> Vec<String> {
+        self.config_items
+            .iter()
+            .filter(|i| i.label.ends_with(".base_url"))
+            .map(|i| i.value.clone())
+            .filter(|v| !v.is_empty())
+            .collect()
+    }
+
+    /// Spawn a background refresh; results feed `shared_catalog`.
+    pub fn spawn_catalog_fetch(&self) {
+        use crate::services::model_fetcher;
+        let urls = self.provider_base_urls();
+        if urls.is_empty() {
+            return;
+        }
+        let shared = self.shared_catalog.clone();
+        // Read API key pointer if exposed via config (env var name). Currently
+        // heuristic (TODO Phase 2 polish): look for any *_api_key env name.
+        let api_key_env = self
+            .config_items
+            .iter()
+            .find(|i| i.label.ends_with(".api_key"))
+            .map(|i| i.value.clone())
+            .filter(|v| !v.is_empty());
+        tokio::spawn(async move {
+            let results = model_fetcher::refresh_catalog(urls, shared, api_key_env).await;
+            tracing::info!(?results, "model catalog refresh finished");
+        });
+    }
+
+    /// Merge shared live results into the picker-visible catalog (deduped,
+    /// sorted). Only logs once per change batch.
+    pub fn sync_catalog_from_shared(&mut self) {
+        let snap = match self.shared_catalog.try_read() {
+            Ok(g) => g.clone(),
+            Err(_) => return,
+        };
+        if snap.is_empty() {
+            return;
+        }
+        let before = self.picker_catalog.len();
+        let mut set: std::collections::HashSet<String> =
+            self.picker_catalog.iter().cloned().collect();
+        set.extend(snap);
+        let mut merged: Vec<String> = set.into_iter().collect();
+        merged.sort();
+        if merged.len() != before || merged != self.picker_catalog {
+            self.picker_catalog = merged;
+            self.reload_picker_view();
+            if !self.fetch_logged {
+                self.log(format!(
+                    "{} live model(s) merged into catalog",
+                    self.picker_catalog.len()
+                ));
+                self.fetch_logged = true;
+            }
+        }
+    }
+
+    /// Reload filtered picker view after catalog or filter change.
+    fn reload_picker_view(&mut self) {
+        let filter = self.modal_input.to_lowercase();
+        self.picker_items = self
+            .picker_catalog
+            .iter()
+            .filter(|m| filter.is_empty() || m.to_lowercase().contains(&filter))
+            .cloned()
+            .collect();
+        if !self.picker_items.is_empty() && self.picker_cursor >= self.picker_items.len() {
+            self.picker_cursor = self.picker_items.len() - 1;
         }
     }
 
@@ -353,19 +438,6 @@ impl App {
         }
         self.config_items = self.config.as_ref()?.config_items().ok()?;
         None
-    }
-
-    fn reload_picker_view(&mut self) {
-        let filter = self.modal_input.to_lowercase();
-        self.picker_items = self
-            .picker_catalog
-            .iter()
-            .filter(|m| filter.is_empty() || m.to_lowercase().contains(&filter))
-            .cloned()
-            .collect();
-        if self.picker_cursor >= self.picker_items.len() && !self.picker_items.is_empty() {
-            self.picker_cursor = self.picker_items.len() - 1;
-        }
     }
 
     fn picker_apply_selection(&mut self) {
@@ -619,5 +691,33 @@ mod tests {
         assert_eq!(app.mode, Mode::List);
         assert!(app.agents[0].frontmatter.model.contains("opus"));
         assert!(app.agents[0].is_dirty, "pick stages a dirty edit");
+    }
+
+    #[test]
+    fn sync_catalog_merges_shared_results_dedup_sorted() {
+        let mut app = App::new(vec![agent("a")], PathBuf::from("."));
+        let before = app.picker_catalog.len();
+        {
+            let mut w = app.shared_catalog.blocking_write();
+            w.insert("deepseek-r1".to_string());
+            w.insert("claude-3-5-sonnet-20241022".to_string()); // already present
+            w.insert("ollama/llama3.2".to_string());
+        }
+        app.sync_catalog_from_shared();
+        assert_eq!(app.picker_catalog.len(), before + 2);
+        assert!(app.picker_catalog.contains(&"deepseek-r1".to_string()));
+        assert!(app.picker_catalog.contains(&"ollama/llama3.2".to_string()));
+        assert_eq!(
+            app.picker_catalog
+                .iter()
+                .filter(|m| *m == "claude-3-5-sonnet-20241022")
+                .count(),
+            1,
+            "dedup: shared result already in static list merges once"
+        );
+        let mut sorted = app.picker_catalog.clone();
+        sorted.sort();
+        assert_eq!(app.picker_catalog, sorted, "catalog is sorted");
+        assert!(app.log.iter().any(|m| m.contains("live model(s) merged")));
     }
 }

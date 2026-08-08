@@ -76,6 +76,8 @@ fn event_loop(
             agent_list::render_bottom(f, chunks[2], &app.log);
         })?;
 
+        app.sync_catalog_from_shared();
+
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
                 handle_key(app, key);

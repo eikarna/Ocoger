@@ -35,10 +35,10 @@
 - [x] **[P1]** Batch model apply: `m` stages single-line input modal; applies `set_model` to all selected agents on `Enter`.
 
 ## 4. Async Provider Model Fetcher
-- [ ] **[P1]** Implement async worker function `fetch_v1_models(base_url, api_key)` using `reqwest`.
-- [ ] **[P1]** Build model catalog cache layer storing fetched model strings.
-- [ ] **[P2]** Implement static fallback list for Anthropic native endpoints.
-- [ ] **[P2]** Add connection timeout and user-friendly error display in TUI log panel for offline endpoints.
+- [x] **[P1]** Implement async worker function `fetch_v1_models(base_url, api_key)` using `reqwest`. *10s timeout, Bearer auth, typed FetchError.*
+- [x] **[P1]** Build model catalog cache layer storing fetched model strings. *`Arc<RwLock<HashSet<String>>>` shared catalog; App merges on change (dedup+sort).*
+- [x] **[P2]** Implement static fallback list for Anthropic native endpoints. *`ANTHROPIC_NATIVE_MODELS` boots picker; merged with live results.*
+- [ ] **[P2]** Add connection timeout and user-friendly error display in TUI log panel for offline endpoints. *Fetch errors routed to tracing for now; per-endpoint log-pane lines pending.*
 
 ## 5. Process Supervision & Automation
 - [ ] **[P1]** Implement `ProcessManager` struct using `tokio::process`.
