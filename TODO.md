@@ -27,12 +27,13 @@
 - [x] **[P1]** Agent mutation + save path: `ParsedAgent::update_models`/`set_model` splice-edit raw YAML preserving comments + columns; missing keys append. `AgentFile::save` via `atomic_write`; `load_agent` read→parse→editable view. *(regex value-group trims trailing ` # comment` to preserve anchors — caught by failing test before fix; `EDITABLE_KEYS` referenced in `parse_agent` so release builds don’t false-positive as dead code).*
 
 ## 3. Terminal User Interface (Ratatui)
-- [ ] **[P0]** Build main application layout (Header, Agent List Pane, Parameter Form Pane, Log Bar). *Header + agent list pane + log bar done; parameter form pane pending.*
-- [x] **[P0]** Implement keyboard event loop in `src/ui/event_handler.rs` handling `j`/`k`, `Space`, `Tab`, `q`. *j/k/arrows navigation, Space toggle, a (toggle all), m (modal), s/Ctrl+S (save), q/Esc (quit w/ dirty guard); Tab postponed to pane-introduction PR.*
-- [x] **[P0]** Implement agent multi-selection toggle logic. *Tested headlessly via `App` MVU.*
-- [ ] **[P1]** Implement dynamic Model Picker Popup widget with real-time text input filtering. *Text input batch editor modal done; live-filter picker pending (Phase 2).*
+- [x] **[P0]** Build main application layout (Header, Agent List Pane, Parameter Form Pane, Log Bar).
+- [x] **[P0]** Implement keyboard event loop in `src/ui/event_handler.rs` handling `j`/`k`, `Space`, `Tab`, `q`. + extended: m/e/g/p/d/s/Ctrl+S/r with mode-aware routing.
+- [x] **[P0]** Implement agent multi-selection toggle logic.
+- [x] **[P1]** Implement dynamic Model Picker Popup widget with real-time text input filtering. *Fuzzy live filter ('p' in List) + Enter-apply-to-selected; catalog merges live+fallback, deduped/sorted.*
 - [x] **[P1]** Add visual indicator badge for modified unsaved agents (`[*]`).
 - [x] **[P1]** Batch model apply: `m` stages single-line input modal; applies `set_model` to all selected agents on `Enter`.
+- [x] **[P1]** Diff preview modal: staged changes write to `.ocoger/staging/<name>` (atomic); unified diff on `d` (any mode).
 
 ## 4. Async Provider Model Fetcher
 - [x] **[P1]** Implement async worker function `fetch_v1_models(base_url, api_key)` using `reqwest`. *10s timeout, Bearer auth, typed FetchError.*
