@@ -110,13 +110,15 @@ impl Keymap {
         t.insert(def(Char('k'), false, false, false), Action::MoveUp);
         t.insert(def(Up, false, false, false), Action::MoveUp);
         t.insert(def(Space, false, false, false), Action::ToggleSelectCurrent);
+        t.insert(def(Enter, false, false, false), Action::ToggleSelectCurrent);
         t.insert(def(Char('a'), false, false, false), Action::ToggleAllAlias);
         t.insert(def(Char('m'), false, false, false), Action::OpenModelModal);
         t.insert(def(Char('p'), false, false, false), Action::OpenPicker);
-        t.insert(def(Char('P'), false, false, false), Action::OpenPresets);
+        t.insert(def(Char('P'), false, true, false), Action::OpenPresets);
         t.insert(def(Char('d'), false, false, false), Action::OpenDiff);
         t.insert(def(Char('e'), false, false, false), Action::OpenForm);
         t.insert(def(Char('g'), false, false, false), Action::OpenForm);
+        t.insert(def(Char('x'), false, false, false), Action::DiscardChanges);
         m.insert(Mode::List, t);
 
         // ----- Model edit modal (input buffer) -----
@@ -129,6 +131,10 @@ impl Keymap {
         let mut t = HashMap::new();
         t.insert(def(Esc, false, false, false), Action::CancelModal);
         t.insert(def(Enter, false, false, false), Action::PickerAccept);
+        t.insert(def(Char('j'), false, false, false), Action::MoveDown);
+        t.insert(def(Down, false, false, false), Action::MoveDown);
+        t.insert(def(Char('k'), false, false, false), Action::MoveUp);
+        t.insert(def(Up, false, false, false), Action::MoveUp);
         m.insert(Mode::Picker, t);
 
         // ----- Form -----
@@ -152,6 +158,10 @@ impl Keymap {
         let mut t = HashMap::new();
         t.insert(def(Esc, false, false, false), Action::CloseDiff);
         t.insert(def(Enter, false, false, false), Action::CloseDiff);
+        t.insert(def(Char('j'), false, false, false), Action::DiffScroll(1));
+        t.insert(def(Down, false, false, false), Action::DiffScroll(1));
+        t.insert(def(Char('k'), false, false, false), Action::DiffScroll(-1));
+        t.insert(def(Up, false, false, false), Action::DiffScroll(-1));
         m.insert(Mode::Diff, t);
 
         // ----- Preset -----
@@ -412,12 +422,15 @@ fn parse_action_in_mode(mode: Mode, name: &str) -> Option<Action> {
         (List, "open_presets") => Some(Action::OpenPresets),
         (List, "open_diff") => Some(Action::OpenDiff),
         (List, "open_form") => Some(Action::OpenForm),
+        (List, "discard_changes") => Some(Action::DiscardChanges),
 
         (ModelEdit, "apply") => Some(Action::ApplyModelModal),
         (ModelEdit, "cancel") => Some(Action::CancelModal),
 
         (Picker, "accept") => Some(Action::PickerAccept),
         (Picker, "cancel") => Some(Action::CancelModal),
+        (Picker, "move_down") => Some(Action::MoveDown),
+        (Picker, "move_up") => Some(Action::MoveUp),
 
         (Form, "exit") => Some(Action::FormExit),
         (Form, "move_next") => Some(Action::FormMove(true)),
@@ -427,6 +440,8 @@ fn parse_action_in_mode(mode: Mode, name: &str) -> Option<Action> {
         (Form, "apply") => Some(Action::FormApply),
 
         (Diff, "close") => Some(Action::CloseDiff),
+        (Diff, "scroll_down") => Some(Action::DiffScroll(1)),
+        (Diff, "scroll_up") => Some(Action::DiffScroll(-1)),
 
         (Preset, "accept") => Some(Action::PresetAccept),
         (Preset, "new_from_selection") => Some(Action::PresetNewStart),
@@ -487,7 +502,7 @@ mod tests {
         let big_p = KeySpec {
             code: KeyCodeShape::Char('P'),
             ctrl: false,
-            shift: false,
+            shift: true,
             alt: false,
         };
         assert_eq!(km.lookup(Mode::List, big_p), Some(Action::OpenPresets));
@@ -597,7 +612,7 @@ open_presets = "<C-p>"
         let old_p = KeySpec {
             code: KeyCodeShape::Char('P'),
             ctrl: false,
-            shift: false,
+            shift: true,
             alt: false,
         };
         assert_eq!(km.lookup(Mode::List, old_p), None);

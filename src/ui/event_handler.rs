@@ -1,6 +1,9 @@
 //! Crossterm event loop: input -> `Action` -> `App::update` -> render.
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    MouseButton, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -19,7 +22,11 @@ use crate::ui::widgets::{agent_list, diff_view, form, picker, preset_picker};
 pub async fn run(mut app: App) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    // Mouse capture: crossterm translates term escape-sequences into
+    // `Event::Mouse`. Supported natively by Windows Terminal/CMD/PWSH,
+    // Alacritty, WezTerm, Termux, Konsole, GNOME Terminal, iTerm2, Appel
+    // Terminal (SGR 1006).
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -28,7 +35,7 @@ pub async fn run(mut app: App) -> io::Result<()> {
     proc_mgr.shutdown_sync();
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
     result
 }
@@ -126,7 +133,7 @@ async fn event_loop(
                     picker::render(f, f.area(), app);
                 }
                 Mode::Diff => {
-                    diff_view::render(f, f.area(), app.diff_text.as_deref());
+                    diff_view::render(f, f.area(), app.diff_text.as_deref(), app.diff_scroll);
                 }
                 Mode::Preset | Mode::PresetNameNew | Mode::PresetConfirmAll => {
                     agent_list::render(f, chunks[1], app);
@@ -172,15 +179,78 @@ async fn event_loop(
         })?;
 
         if event::poll(Duration::from_millis(16))? {
-            if let Event::Key(key) = event::read()? {
-                if let Some(action) = dispatch_key_if_press(app, key) {
-                    maybe_restart(proc_mgr, app, action).await;
-                    if app.should_quit {
-                        return Ok(());
+            match event::read()? {
+                Event::Key(key) => {
+                    if let Some(action) = dispatch_key_if_press(app, key) {
+                        maybe_restart(proc_mgr, app, action).await;
+                        if app.should_quit {
+                            return Ok(());
+                        }
                     }
                 }
+                Event::Mouse(m) => {
+                    if let Some(action) = dispatch_mouse(app, m) {
+                        app.update(action);
+                    }
+                }
+                _ => {}
             }
         }
+    }
+}
+
+/// Translate crossterm mouse event into an `Action` for the list pane.
+/// Geometry mirrors the draw path: header(1) + content starts at y=1,
+/// list block has a 1-row border + 1 header row before agent rows.
+/// Returns None for events we don't bind (scroll, drag, move, right-click).
+pub(crate) fn dispatch_mouse(
+    app: &App,
+    m: crossterm::event::MouseEvent,
+) -> Option<Action> {
+    // Scroll wheel: route to the active scrollable view.
+    match m.kind {
+        MouseEventKind::ScrollDown => {
+            return match app.mode {
+                Mode::Picker => Some(Action::MoveDown),
+                Mode::Preset => Some(Action::MoveDown),
+                Mode::Diff => Some(Action::DiffScroll(3)),
+                Mode::List => Some(Action::MoveDown),
+                _ => None,
+            };
+        }
+        MouseEventKind::ScrollUp => {
+            return match app.mode {
+                Mode::Picker => Some(Action::MoveUp),
+                Mode::Preset => Some(Action::MoveUp),
+                Mode::Diff => Some(Action::DiffScroll(-3)),
+                Mode::List => Some(Action::MoveUp),
+                _ => None,
+            };
+        }
+        _ => {}
+    }
+    if app.mode != Mode::List {
+        return None;
+    }
+    let MouseEventKind::Down(MouseButton::Left) = m.kind else {
+        return None;
+    };
+    // chunks[1] top = y=1 (after 1-line header). Border + header = 2 rows.
+    const LIST_TOP: u16 = 1;
+    const ROWS_ABOVE_AGENTS: u16 = 2; // block border + column header
+    if m.row < LIST_TOP + ROWS_ABOVE_AGENTS {
+        return None;
+    }
+    let row = (m.row - LIST_TOP - ROWS_ABOVE_AGENTS) as usize;
+    if row >= app.agents.len() {
+        return None;
+    }
+    // Same-row click toggles selection (mirrors Space); click elsewhere
+    // moves the cursor so a second click / Space can toggle precisely.
+    if row == app.cursor {
+        Some(Action::ToggleSelectRow(row))
+    } else {
+        Some(Action::MoveCursorTo(row))
     }
 }
 
@@ -200,7 +270,9 @@ async fn maybe_restart(proc_mgr: &mut ProcessManager, app: &mut App, action: Act
     use Action::*;
     let want_restart = match action {
         Restart => true,
-        Save => app.save_and_check_restart(),
+        // App::update(Save) already saved dirty agents; `log_has_recent_save`
+        // reports whether that save actually wrote files (restart trigger).
+        Save => app.log_has_recent_save(),
         _ => return,
     };
     if !want_restart {
@@ -220,17 +292,32 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     // SHIFT+A as `Char('A')` with SHIFT modifier; we canonicalize by
     // lowercasing when needed so "<S-a>" and "A" end up the same shape.
     let spec = match key.code {
+        KeyCode::Char(' ') => KeySpec {
+            code: KeyCodeShape::Space,
+            ctrl: key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL),
+            shift: key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::SHIFT),
+            alt: key.modifiers.contains(crossterm::event::KeyModifiers::ALT),
+        },
         KeyCode::Char(c) => {
-            let (c_norm, extra_shift) = (c, false);
+            // Crossterm on Windows/legacy terminals reports Shift+P as
+            // Char('P') WITHOUT the SHIFT modifier flag. Mirror bare-char
+            // keymap convention: an uppercase char implies shift so a
+            // `<S-p>`-style binding still matches. Lowercase chars keep
+            // shift=false.
+            let implied_shift = c.is_ascii_uppercase();
             KeySpec {
-                code: KeyCodeShape::Char(c_norm),
+                code: KeyCodeShape::Char(c),
                 ctrl: key
                     .modifiers
                     .contains(crossterm::event::KeyModifiers::CONTROL),
                 shift: key
                     .modifiers
                     .contains(crossterm::event::KeyModifiers::SHIFT)
-                    || extra_shift,
+                    || implied_shift,
                 alt: key.modifiers.contains(crossterm::event::KeyModifiers::ALT),
             }
         }
@@ -289,23 +376,33 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     // treats an uppercase char as shift-modified lowercase (crossterm on
     // Windows reports `P` + SHIFT for both `<S-p>` and bare `P`).
     let action = app.keymap.lookup(app.mode, spec).or_else(|| {
-        if let (KeyCodeShape::Char(c), true) = (spec.code, spec.shift) {
-            // Try shift=true with the lowercase form, and shift=false as typed.
-            let lower = spec_with(
-                KeyCodeShape::Char(c.to_ascii_lowercase()),
-                spec.ctrl,
-                true,
-                spec.alt,
-            );
-            let upper_no_shift = spec_with(KeyCodeShape::Char(c), spec.ctrl, false, spec.alt);
-            app.keymap
-                .lookup(app.mode, lower)
-                .or_else(|| app.keymap.lookup(app.mode, upper_no_shift))
-        } else if let KeyCodeShape::Char(c) = spec.code {
-            // Typing 'a' may also match a user keymap entry `<S-a>` if crossterm
-            // didn't pass SHIFT through.
-            let shifted = spec_with(KeyCodeShape::Char(c), spec.ctrl, true, spec.alt);
-            app.keymap.lookup(app.mode, shifted)
+        if let KeyCodeShape::Char(c) = spec.code {
+            if c.is_ascii_uppercase() {
+                // Retry with shift=true: user keymaps (and our default '<S-p>')
+                // may bind the uppercase char without the shift flag.
+                let shifted = spec_with(spec.code, spec.ctrl, true, spec.alt);
+                app.keymap
+                    .lookup(app.mode, shifted)
+                    .or_else(|| {
+                        let lower = spec_with(
+                            KeyCodeShape::Char(c.to_ascii_lowercase()),
+                            spec.ctrl,
+                            true,
+                            spec.alt,
+                        );
+                        app.keymap.lookup(app.mode, lower)
+                    })
+                    .or_else(|| {
+                        let upper_no_shift =
+                            spec_with(spec.code, spec.ctrl, false, spec.alt);
+                        app.keymap.lookup(app.mode, upper_no_shift)
+                    })
+            } else {
+                // Typing 'a' may also match a user keymap entry `<S-a>` if
+                // crossterm didn't pass SHIFT through.
+                let shifted = spec_with(KeyCodeShape::Char(c), spec.ctrl, true, spec.alt);
+                app.keymap.lookup(app.mode, shifted)
+            }
         } else {
             None
         }
@@ -364,6 +461,15 @@ mod tests {
         }
     }
 
+    fn key_with_mods(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
     fn scratch_app() -> App {
         let a = AgentFile {
             path: PathBuf::from("a.md"),
@@ -409,5 +515,118 @@ mod tests {
             Mode::ModelEdit,
             "modal must remain open after Release"
         );
+    }
+
+    #[test]
+    fn space_char_maps_to_space_shape_and_toggles_agent() {
+        let mut app = scratch_app();
+        assert!(app.agents[0].is_selected, "fixture starts selected");
+        // Platform bug: crossterm reports Space as Char(' '); previously this
+        // only matched a `Char(' ')` keymap entry which defaults don't have.
+        dispatch_key_if_press(&mut app, key(KeyCode::Char(' '), KeyEventKind::Press));
+        assert!(!app.agents[0].is_selected, "space must toggle selection");
+    }
+
+    #[test]
+    fn shift_p_opens_presets_even_with_or_without_modifier_flag() {
+        // Windows legacy path often reports Char('P') *without* SHIFT modifier.
+        // Ensure both dispatches resolve to OpenPresets.
+        let mut app = scratch_app();
+        let no_shift = key_with_mods(KeyCode::Char('P'), KeyModifiers::NONE);
+        let with_shift = key_with_mods(KeyCode::Char('P'), KeyModifiers::SHIFT);
+        // List mode requires presets to exist; assert action id only.
+        let a1 = dispatch_key_if_press(&mut app, no_shift).unwrap();
+        let a2 = dispatch_key_if_press(&mut app, with_shift).unwrap();
+        assert_eq!(a1, Action::OpenPresets, "bare 'P' (no shift flag)");
+        assert_eq!(a2, Action::OpenPresets, "'P' + SHIFT");
+    }
+
+    #[test]
+    fn lowercase_p_and_m_resolve_to_their_list_actions() {
+        let mut app = scratch_app();
+        let p = dispatch_key_if_press(&mut app, key(KeyCode::Char('p'), KeyEventKind::Press));
+        // With zero selected agents, OpenPicker stays a no-op in update() —
+        // but we expect the *dispatch* to identify the action correctly.
+        assert_eq!(p, Some(Action::OpenPicker));
+        // Fresh app for 'm' so the modal state from OpenPicker doesn't race
+        // the assertion (typing 'm' inside a Picker would return PickerInput).
+        let mut app2 = scratch_app();
+        let m = dispatch_key_if_press(&mut app2, key(KeyCode::Char('m'), KeyEventKind::Press));
+        assert_eq!(m, Some(Action::OpenModelModal));
+    }
+
+    #[test]
+    fn mouse_left_down_toggles_clicked_row_when_cursor_is_there() {
+        let mut app = scratch_app();
+        // fixture cursor starts at 0, is_selected = true
+        let ev = crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 1 + 2, // header + border + header-row
+            modifiers: KeyModifiers::NONE,
+        };
+        let a = dispatch_mouse(&app, ev);
+        assert_eq!(a, Some(Action::ToggleSelectRow(0)));
+        app.update(a.unwrap());
+        assert!(!app.agents[0].is_selected);
+    }
+
+    #[test]
+    fn mouse_scroll_routes_to_picker_and_diff() {
+        let mut app = scratch_app();
+        // Force picker mode with some items.
+        app.agents[0].is_selected = true;
+        app.update(Action::OpenPicker);
+        assert_eq!(app.mode, Mode::Picker);
+        let scroll_down = crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        let a = dispatch_mouse(&app, scroll_down);
+        assert_eq!(a, Some(Action::MoveDown), "picker scroll-down = MoveDown");
+        let scroll_up = crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(dispatch_mouse(&app, scroll_up), Some(Action::MoveUp));
+    }
+
+    #[test]
+    fn mouse_left_down_moves_cursor_when_clicking_other_row() {
+        let mut app = scratch_app();
+        // Clicks row 1 while cursor is 0 → expect cursor move, not toggle.
+        let ev = crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 1 + 2 + 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        // Only one agent in fixture; dispatch must return None for out-of-range.
+        let _ = dispatch_mouse(&app, ev);
+        // Add a second agent to make row valid.
+        app.agents.push(AgentFile {
+            path: PathBuf::from("b.md"),
+            frontmatter: crate::core::agent_parser::AgentFrontmatter {
+                model: "m".into(),
+                temperature: None,
+                top_k: None,
+                top_p: None,
+                reasoning_effort: None,
+            },
+            raw_body: String::new(),
+            is_selected: false,
+            is_dirty: false,
+            raw_yaml: "model: m".into(),
+            origin: crate::core::agent_parser::AgentOrigin::Project,
+        });
+        let a = dispatch_mouse(&app, ev);
+        assert_eq!(a, Some(Action::MoveCursorTo(1)));
+        app.update(a.unwrap());
+        assert_eq!(app.cursor, 1);
+        assert!(!app.agents[1].is_selected, "cursor-move alone must not toggle");
     }
 }

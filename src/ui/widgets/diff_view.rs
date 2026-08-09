@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-pub fn render(frame: &mut Frame, area: Rect, diff: Option<&str>) {
+pub fn render(frame: &mut Frame, area: Rect, diff: Option<&str>, scroll: u16) {
     let w = area.width.saturating_mul(90) / 100;
     let h = area.height.saturating_mul(85).div_ceil(100);
     let x = area.x + (area.width - w) / 2;
@@ -36,9 +36,10 @@ pub fn render(frame: &mut Frame, area: Rect, diff: Option<&str>) {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_type(ratatui::widgets::BorderType::Rounded)
-                    .title(" Diff preview "),
+                    .title(format!(" Diff preview (scroll {scroll}) [j/k wheel] ")),
             )
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0)),
         popup,
     );
 }

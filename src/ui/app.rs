@@ -54,6 +54,10 @@ pub enum Action {
     MoveDown,
     MoveUp,
     ToggleSelectCurrent,
+    /// Mouse click on row N of the agent list: move cursor + toggle.
+    ToggleSelectRow(usize),
+    /// Mouse click on row N: move cursor without toggling.
+    MoveCursorTo(usize),
     /// `a` in List — alias that correctly picks Select-All vs Deselect-All
     /// based on current state. Mirrors prior `toggle_all_action()` behavior.
     ToggleAllAlias,
@@ -63,6 +67,10 @@ pub enum Action {
     /// Show staged edits as a unified diff (D key; List mode only).
     OpenDiff,
     CloseDiff,
+    /// Discard all staged edits: reload dirty agents from disk, clearing dirty.
+    DiscardChanges,
+    /// Diff-mode vertical scroll.
+    DiffScroll(i32),
     OpenForm,
     OpenPicker,
     /// Phase 4 Presets: open preset picker modal (P key, List mode).
@@ -145,6 +153,8 @@ pub struct App {
     fetch_logged: bool,
     /// Cached pre-save diff text (recomputed on open).
     pub diff_text: Option<String>,
+    /// Vertical scroll offset for the diff modal (0 = top).
+    pub diff_scroll: u16,
     /// Phase 4 presets: in-memory list from `.ocoger/presets.jsonc`.
     pub presets: Vec<Preset>,
     /// Live filter of `presets` (recomputed on `PresetInput`).
@@ -164,6 +174,8 @@ pub struct App {
     /// on a `GlobalReadOnly` config entry. Set when user tries +/- on a
     /// `·global` row, consumed by `GlobalEditYes`.
     pending_global_edit: Option<(String, i32)>,
+    /// Set by `Save` handling; `true` iff the last save wrote ≥1 file.
+    last_save_wrote: bool,
 }
 
 impl App {
@@ -208,6 +220,7 @@ impl App {
             fetch_logged_lines: std::collections::HashSet::new(),
             fetch_logged: false,
             diff_text: None,
+            diff_scroll: 0,
             presets: Vec::new(),
             preset_items: Vec::new(),
             preset_cursor: 0,
@@ -216,6 +229,7 @@ impl App {
             keymap: Keymap::defaults(),
             theme: Theme::default(),
             pending_global_edit: None,
+            last_save_wrote: false,
         };
         // Best-effort: load presets on boot; errors land in the log but never
         // block the UI (a corrupt presets file shouldn't break agent editing).
@@ -261,11 +275,15 @@ impl App {
 
     /// Provider base URLs extracted from the loaded config for model fetch.
     fn provider_base_urls(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
         self.config_items
             .iter()
             .filter(|i| i.label.ends_with(".base_url"))
             .map(|i| i.value.clone())
             .filter(|v| !v.is_empty())
+            // Dedup identical URLs — otherwise the same endpoint gets
+            // fetched twice and the log shows double entries.
+            .filter(|v| seen.insert(v.clone()))
             .collect()
     }
 
@@ -389,7 +407,17 @@ impl App {
                         };
                     }
                 }
-                Mode::ModelEdit | Mode::Picker | Mode::Diff => {}
+                Mode::ModelEdit | Mode::Diff => {}
+                Mode::Picker => {
+                    let n = self.picker_items.len();
+                    if n > 0 {
+                        self.picker_cursor = if matches!(action, MoveDown) {
+                            (self.picker_cursor + 1) % n
+                        } else {
+                            (self.picker_cursor + n - 1) % n
+                        };
+                    }
+                }
                 Mode::Preset => {
                     let n = self.preset_items.len();
                     if n > 0 {
@@ -492,6 +520,17 @@ impl App {
                     self.toggle()
                 }
             }
+            ToggleSelectRow(row) => {
+                if self.mode == Mode::List && row < self.agents.len() {
+                    self.cursor = row;
+                    self.toggle();
+                }
+            }
+            MoveCursorTo(row) => {
+                if row < self.agents.len() {
+                    self.cursor = row;
+                }
+            }
             ToggleAllAlias => {
                 if self.mode == Mode::List {
                     let target = !(self.selected_count() == self.agents.len());
@@ -515,21 +554,62 @@ impl App {
             }
             OpenDiff => {
                 if self.mode == Mode::List && self.dirty_count() > 0 {
+                    let diffs = crate::core::diff::agent_diffs(&self.agents, &self.project_root);
                     self.diff_text = Some(
-                        crate::core::diff::agent_diffs(&self.agents, &self.project_root)
-                            .into_iter()
+                        diffs
+                            .iter()
                             .map(|d| format!("--- {} (staged) ---\n{}", d.file_name, d.diff_text))
                             .collect::<Vec<_>>()
                             .join("\n"),
                     );
+                    self.diff_scroll = 0;
                     self.mode = Mode::Diff;
                 } else {
                     self.log("nothing to diff (no staged changes)".to_string());
                 }
             }
+            DiffScroll(delta) => {
+                if self.mode == Mode::Diff {
+                    let max = self
+                        .diff_text
+                        .as_deref()
+                        .map(|d| d.lines().count().saturating_sub(1) as u16)
+                        .unwrap_or(0);
+                    self.diff_scroll = if delta.is_negative() {
+                        self.diff_scroll.saturating_sub(delta.unsigned_abs() as u16)
+                    } else {
+                        self.diff_scroll.saturating_add(delta as u16).min(max)
+                    };
+                }
+            }
+            DiscardChanges => {
+                if self.mode == Mode::List {
+                    let mut reloaded = 0;
+                    let mut failed = 0;
+                    for a in self.agents.iter_mut().filter(|a| a.is_dirty) {
+                        match crate::core::agent_parser::load_agent(&a.path) {
+                            Ok(fresh) => {
+                                *a = fresh;
+                                reloaded += 1;
+                            }
+                            Err(_) => failed += 1,
+                        }
+                    }
+                    if failed > 0 {
+                        self.log(format!(
+                            "discard: reloaded {reloaded}, {failed} file(s) failed to re-read"
+                        ));
+                    } else if reloaded > 0 {
+                        self.log(format!("discarded staged edits on {reloaded} agent(s)"));
+                    } else {
+                        self.log("no staged changes to discard".to_string());
+                    }
+                }
+            }
             CloseDiff => {
                 if self.mode == Mode::Diff {
                     self.diff_text = None;
+                    self.diff_scroll = 0;
                     self.mode = Mode::List;
                 }
             }
@@ -976,6 +1056,11 @@ impl App {
     }
 
     fn save_dirty(&mut self) {
+        let wrote = self.save_dirty_inner();
+        self.last_save_wrote = wrote;
+    }
+
+    fn save_dirty_inner(&mut self) -> bool {
         let mut ok = 0;
         let mut failed = vec![];
         for a in self.agents.iter_mut().filter(|a| a.is_dirty) {
@@ -1001,15 +1086,22 @@ impl App {
         if ok == 0 && failed.is_empty() {
             self.log("Nothing to save".to_string());
         }
+        failed.is_empty() && ok > 0
+    }
+
+    /// True iff the most recent `Save` action actually wrote ≥1 file.
+    /// The event loop uses this to decide whether to restart the process —
+    /// avoids re-saving (which would double-log) while preserving the
+    /// PRD restart-after-save semantic.
+    pub fn log_has_recent_save(&self) -> bool {
+        self.last_save_wrote
     }
 
     /// Save all dirty agents, then signal whether the supervised process
     /// should be restarted (event loop observes this on `s` / `Ctrl+S`).
     /// Returns `true` only when at least one file was written.
     pub fn save_and_check_restart(&mut self) -> bool {
-        let changed = self.dirty_count() > 0;
-        self.save_dirty();
-        changed && self.dirty_count() == 0
+        self.save_dirty_inner()
     }
 }
 
@@ -1138,6 +1230,62 @@ mod tests {
         assert!(disk_a.contains("model: openai/gpt-9"));
         let disk_b = std::fs::read_to_string(dir.join("b.md")).unwrap();
         assert!(disk_b.contains("model: m2"), "unselected agent untouched");
+    }
+
+    #[test]
+    fn discard_changes_reloads_dirty_agents_from_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "ocoger-discard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.md");
+        std::fs::write(&path, "---\nmodel: original\n---\nbody\n").unwrap();
+        let mut app = App::new(vec![crate::core::agent_parser::load_agent(&path).unwrap()], dir);
+        app.agents[0].is_selected = true;
+        app.update(Action::OpenModelModal);
+        for c in "tampered".chars() {
+            app.update(Action::ModalInput(c));
+        }
+        app.update(Action::ApplyModelModal);
+        assert_eq!(app.dirty_count(), 1);
+        app.update(Action::DiscardChanges);
+        assert_eq!(app.dirty_count(), 0);
+        assert_eq!(app.agents[0].frontmatter.model, "original");
+    }
+
+    #[test]
+    fn diff_scroll_clamps_and_resets_on_close() {
+        let mut app = app3();
+        app.agents[0].is_dirty = true;
+        app.update(Action::OpenDiff);
+        assert_eq!(app.mode, Mode::Diff);
+        assert_eq!(app.diff_scroll, 0);
+        app.update(Action::DiffScroll(-5));
+        assert_eq!(app.diff_scroll, 0, "negative saturates at 0");
+        app.update(Action::DiffScroll(2));
+        assert_eq!(app.diff_scroll, 2);
+        app.update(Action::CloseDiff);
+        assert_eq!(app.diff_scroll, 0, "close resets scroll");
+    }
+
+    #[test]
+    fn picker_jk_moves_cursor_with_wrap() {
+        let mut app = app3();
+        app.agents[0].is_selected = true;
+        app.update(Action::OpenPicker);
+        assert_eq!(app.mode, Mode::Picker);
+        let n = app.picker_items.len();
+        assert!(n >= 2, "static catalog has multiple entries");
+        let start = app.picker_cursor;
+        app.update(Action::MoveDown);
+        assert_eq!(app.picker_cursor, (start + 1) % n);
+        app.update(Action::MoveUp);
+        assert_eq!(app.picker_cursor, start);
     }
 
     #[test]

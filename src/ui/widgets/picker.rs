@@ -17,7 +17,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let chunks = ratatui::layout::Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints([
-            ratatui::layout::Constraint::Length(2),
+            ratatui::layout::Constraint::Length(3), // border + 1-line input
             ratatui::layout::Constraint::Min(1),
         ])
         .split(popup);
