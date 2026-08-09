@@ -1,6 +1,6 @@
 //! Crossterm event loop: input -> `Action` -> `App::update` -> render.
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -109,14 +109,25 @@ async fn event_loop(
 
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
-                let action = handle_key(app, key);
-                maybe_restart(proc_mgr, app, action).await;
-                if app.should_quit {
-                    return Ok(());
+                if let Some(action) = dispatch_key_if_press(app, key) {
+                    maybe_restart(proc_mgr, app, action).await;
+                    if app.should_quit {
+                        return Ok(());
+                    }
                 }
             }
         }
     }
+}
+
+/// Runs `handle_key` only when `key` is a Press event. Returns the action
+/// dispatched (or None for Release/Repeat). Extracted so unit tests can drive
+/// this pure predicate without spinning up a terminal.
+pub(crate) fn dispatch_key_if_press(app: &mut App, key: KeyEvent) -> Option<Action> {
+    if key.kind != KeyEventKind::Press {
+        return None;
+    }
+    Some(handle_key(app, key))
 }
 
 /// If `action` is a process-restarting action (r / save with changes), perform
@@ -270,5 +281,68 @@ fn spec_with(
         ctrl,
         shift,
         alt,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::agent_parser::{AgentFile, AgentFrontmatter};
+    use crossterm::event::{KeyEvent, KeyModifiers};
+    use std::path::PathBuf;
+
+    fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    fn scratch_app() -> App {
+        let a = AgentFile {
+            path: PathBuf::from("a.md"),
+            frontmatter: AgentFrontmatter {
+                model: "m".into(),
+                temperature: None,
+                top_k: None,
+                top_p: None,
+                reasoning_effort: None,
+            },
+            raw_body: String::new(),
+            is_selected: true,
+            is_dirty: false,
+            raw_yaml: "model: m".into(),
+        };
+        App::new(vec![a], PathBuf::from("."))
+    }
+
+    #[test]
+    fn only_press_dispatches_action() {
+        let mut app = scratch_app();
+        // 'm' opens the ModelEdit modal only on Press.
+        assert_eq!(
+            dispatch_key_if_press(&mut app, key(KeyCode::Char('m'), KeyEventKind::Press)),
+            Some(Action::OpenModelModal)
+        );
+        assert_eq!(app.mode, Mode::ModelEdit);
+
+        // Release + Repeat of the same key must be filtered out.
+        assert_eq!(
+            dispatch_key_if_press(&mut app, key(KeyCode::Char('m'), KeyEventKind::Release)),
+            None
+        );
+        assert_eq!(
+            dispatch_key_if_press(&mut app, key(KeyCode::Char('m'), KeyEventKind::Repeat)),
+            None
+        );
+
+        // Mode stays where Press left it — Release/Repeat must not "close and reopen".
+        assert_eq!(
+            app.mode,
+            Mode::ModelEdit,
+            "modal must remain open after Release"
+        );
     }
 }
