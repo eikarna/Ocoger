@@ -3,6 +3,7 @@
 //! `Action`s and re-renders.
 
 use crate::core::agent_parser::AgentFile;
+use crate::core::config_resolver;
 use crate::core::jsonc_config::{ConfigItem, JsoncConfig};
 use crate::core::keymap::Keymap;
 use crate::core::presets::{Preset, Presets};
@@ -150,7 +151,7 @@ pub struct App {
 
 impl App {
     pub fn new(agents: Vec<AgentFile>, project_root: PathBuf) -> Self {
-        let (config_items, config) = match JsoncConfig::ensure_loaded(&project_root) {
+        let (config_items, config) = match config_resolver::ensure_loaded(&project_root) {
             Ok(c) => (c.config_items().unwrap_or_default(), Some(c)),
             Err(e) => {
                 let mut log = Vec::new();
@@ -238,6 +239,12 @@ impl App {
             .find(|i| i.label.ends_with(".api_key"))
             .map(|i| i.value.clone())
             .filter(|v| !v.is_empty());
+        // Sync unit tests (cargo test) create `App` outside any Tokio runtime;
+        // `tokio::spawn` panics in that context. Detect & skip — the live TUI
+        // always runs inside #[tokio::main].
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
         tokio::spawn(async move {
             let results = model_fetcher::refresh_catalog(urls, shared, api_key_env).await;
             for (base, r) in results {

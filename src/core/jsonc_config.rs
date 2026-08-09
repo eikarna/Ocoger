@@ -79,6 +79,21 @@ impl JsoncConfig {
         })
     }
 
+    /// Load from an explicit path (anywhere on disk). Used by the cascade
+    /// resolver when the discovered primary path lies outside
+    /// `<project>/opencode.jsonc`.
+    pub fn load_at_path(path: &std::path::Path) -> Result<Option<Self>, ConfigError> {
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let raw = std::fs::read_to_string(path)?;
+        parse_cst(&raw)?;
+        Ok(Some(Self {
+            path: path.to_path_buf(),
+            raw,
+        }))
+    }
+
     /// Typed read-only view of the whole config (comments discarded on read).
     pub fn value(&self) -> Result<Value, ConfigError> {
         let parsed: Value =
