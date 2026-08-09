@@ -102,7 +102,10 @@ jobs:
       - name: Create GitHub Release and upload
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          # All 8 matrix legs hit this step; only one may auto-generate notes
+          # or the release body ends up with N duplicate "Full Changelog"
+          # lines. Pick a deterministic leg (windows x64) to own notes.
+          generate_release_notes: ${{ matrix.target == 'x86_64-pc-windows-msvc' }}
           files: |
             dist/ocoger-${{ github.ref_name }}-${{ matrix.target }}.zip
             dist/ocoger-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
