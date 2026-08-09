@@ -53,6 +53,8 @@ async fn event_loop(
         }
 
         terminal.draw(|f| {
+            use ratatui::style::{Modifier, Style};
+            use ratatui::text::{Line, Span};
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -68,43 +70,70 @@ async fn event_loop(
                 }
                 s => format!("{:?}", s),
             };
-            let header = format!(
-                " ocoger :: {} agent(s) | {} selected | {} unsaved | mode: {:?} | proc: {} ",
-                app.agents.len(),
-                app.selected_count(),
-                app.dirty_count(),
-                app.mode,
-                proc_lbl
-            );
+            let mode_style = match app.mode {
+                Mode::List => Style::default().fg(app.theme.accent),
+                Mode::ModelEdit => Style::default().fg(app.theme.syntax_keyword),
+                Mode::Form => Style::default().fg(app.theme.accent),
+                Mode::Picker => Style::default().fg(app.theme.warn),
+                Mode::Diff => Style::default().fg(app.theme.accent),
+                Mode::Preset => Style::default().fg(app.theme.syntax_keyword),
+                Mode::PresetNameNew => Style::default().fg(app.theme.warn),
+                Mode::PresetConfirmAll => Style::default().fg(app.theme.warn),
+            };
+            let dirty_style = if app.dirty_count() > 0 {
+                Style::default()
+                    .fg(app.theme.warn)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.dim)
+            };
+            let header = Line::from(vec![
+                Span::styled(" ◆ ", Style::default().fg(app.theme.accent)),
+                Span::styled(
+                    "ocoger ",
+                    Style::default()
+                        .fg(app.theme.fg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(":: "),
+                Span::raw(format!("{} agent(s) ", app.agents.len())),
+                Span::styled(
+                    format!("· {} selected ", app.selected_count()),
+                    Style::default().fg(app.theme.dim),
+                ),
+                Span::styled(format!("· {} unsaved ", app.dirty_count()), dirty_style),
+                Span::styled(format!("· mode {:?}", app.mode), mode_style),
+                Span::styled(" · proc ", Style::default().fg(app.theme.dim)),
+                Span::raw(proc_lbl),
+                Span::styled(
+                    format!(" · theme {} ", app.theme.name()),
+                    Style::default().fg(app.theme.dim),
+                ),
+            ]);
             f.render_widget(ratatui::widgets::Paragraph::new(header), chunks[0]);
 
             match app.mode {
                 Mode::List | Mode::ModelEdit => {
-                    agent_list::render(f, chunks[1], &app.agents, app.cursor);
+                    agent_list::render(f, chunks[1], app);
                     if app.mode == Mode::ModelEdit {
-                        agent_list::render_modal(
-                            f,
-                            f.area(),
-                            &app.modal_input,
-                            app.selected_count(),
-                        );
+                        agent_list::render_modal(f, f.area(), app);
                     }
                 }
                 Mode::Form => form::render(f, chunks[1], app),
                 Mode::Picker => {
-                    agent_list::render(f, chunks[1], &app.agents, app.cursor);
+                    agent_list::render(f, chunks[1], app);
                     picker::render(f, f.area(), app);
                 }
                 Mode::Diff => {
                     diff_view::render(f, f.area(), app.diff_text.as_deref());
                 }
                 Mode::Preset | Mode::PresetNameNew | Mode::PresetConfirmAll => {
-                    agent_list::render(f, chunks[1], &app.agents, app.cursor);
+                    agent_list::render(f, chunks[1], app);
                     preset_picker::render(f, f.area(), app);
                 }
             }
 
-            agent_list::render_bottom(f, chunks[2], &app.log);
+            agent_list::render_bottom(f, chunks[2], app);
         })?;
 
         if event::poll(Duration::from_millis(16))? {

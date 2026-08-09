@@ -2,7 +2,7 @@
 
 use crate::ui::app::App;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
@@ -33,9 +33,16 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             ""
         }
     );
+    let t = &app.theme;
     frame.render_widget(
         Paragraph::new(input)
-            .block(Block::default().borders(Borders::ALL).title(" filter "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(t.accent))
+                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .title(" filter "),
+            )
             .wrap(Wrap { trim: false }),
         chunks[0],
     );
@@ -51,9 +58,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled(
                     m.clone(),
                     if i == app.picker_cursor {
-                        Style::default().fg(Color::Yellow)
+                        Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default()
+                        Style::default().fg(t.fg)
                     },
                 ),
             ]))
@@ -65,7 +72,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         state.select(Some(app.picker_cursor));
     }
     frame.render_stateful_widget(
-        List::new(items).block(Block::default().borders(Borders::ALL).title(" results ")),
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(t.border))
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .title(" results "),
+        ),
         chunks[1],
         &mut state,
     );

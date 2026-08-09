@@ -7,12 +7,15 @@
 
 use crate::ui::app::{App, Mode};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 use ratatui::Frame;
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
+    let t = &app.theme;
     let w = 78u16;
     let h = match app.mode {
         Mode::PresetConfirmAll => 7,
@@ -33,7 +36,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             );
             frame.render_widget(
                 Paragraph::new(text)
-                    .block(Block::default().borders(Borders::ALL).title(" new preset "))
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .border_style(Style::default().fg(t.accent))
+                            .title(" new preset "),
+                    )
                     .wrap(Wrap { trim: false }),
                 popup,
             );
@@ -52,6 +61,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                     .block(
                         Block::default()
                             .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .border_style(Style::default().fg(t.warn).add_modifier(Modifier::BOLD))
                             .title(" apply to all? "),
                     )
                     .wrap(Wrap { trim: false }),
@@ -81,6 +92,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 Paragraph::new(input).block(
                     Block::default()
                         .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(t.accent))
                         .title(" preset filter "),
                 ),
                 chunks[0],
@@ -99,9 +112,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                         Span::styled(
                             label,
                             if i == app.preset_cursor {
-                                Style::default().fg(Color::Yellow)
-                            } else {
                                 Style::default()
+                                    .fg(t.accent)
+                                    .bg(t.highlight_bg)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(t.fg)
                             },
                         ),
                     ]))
@@ -113,14 +129,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 state.select(Some(app.preset_cursor));
             }
             frame.render_stateful_widget(
-                List::new(items).block(Block::default().borders(Borders::ALL).title(" presets ")),
+                List::new(items).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(t.border))
+                        .title(" presets "),
+                ),
                 chunks[1],
                 &mut state,
             );
 
             let footer =
                 "Enter=apply selected · n=new-from-selection · d=del · Shift+A=apply to all · Esc=close";
-            frame.render_widget(Paragraph::new(footer), chunks[2]);
+            frame.render_widget(
+                Paragraph::new(footer).style(Style::default().fg(t.dim)),
+                chunks[2],
+            );
         }
     }
 }

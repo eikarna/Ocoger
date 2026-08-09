@@ -35,6 +35,7 @@ pub fn render(frame: &mut Frame, area: Rect, diff: Option<&str>) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
                     .title(" Diff preview "),
             )
             .wrap(Wrap { trim: false }),

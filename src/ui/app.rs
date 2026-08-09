@@ -7,6 +7,7 @@ use crate::core::config_resolver;
 use crate::core::jsonc_config::{ConfigItem, JsoncConfig};
 use crate::core::keymap::Keymap;
 use crate::core::presets::{Preset, Presets};
+use crate::ui::theme::Theme;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -147,6 +148,8 @@ pub struct App {
     presets_io: Option<Presets>,
     /// Resolved keybindings for the current session (defaults + global + project).
     pub keymap: Keymap,
+    /// Resolved visual theme (from `theme` key of merged config).
+    pub theme: Theme,
 }
 
 impl App {
@@ -194,6 +197,7 @@ impl App {
             pending_preset: None,
             presets_io: None,
             keymap: Keymap::defaults(),
+            theme: Theme::default(),
         };
         // Best-effort: load presets on boot; errors land in the log but never
         // block the UI (a corrupt presets file shouldn't break agent editing).
@@ -207,6 +211,31 @@ impl App {
         app.keymap = km;
         for w in km_warnings {
             app.log(w);
+        }
+        // Theme: `theme` key from merged config; custom TOMLs under
+        // .ocoger/themes/ take precedence over builtins of the same name.
+        if let Some(cfg) = app.config.as_ref() {
+            if let Ok(Some(name)) = cfg
+                .value()
+                .map(|v| v.get("theme").and_then(|t| t.as_str()).map(str::to_owned))
+            {
+                let themes_dir = app.project_root.join(".ocoger").join("themes");
+                let (custom, twarn) = crate::ui::theme::load_custom_from(&themes_dir);
+                for w in twarn {
+                    app.log(format!("[theme] {w}"));
+                }
+                if let Some(t) = custom
+                    .get(&name)
+                    .copied()
+                    .or_else(|| crate::ui::theme::by_name(&name))
+                {
+                    app.theme = t;
+                } else {
+                    app.log(format!(
+                        "[theme] unknown '{name}'; using default (opencode)"
+                    ));
+                }
+            }
         }
         app.spawn_catalog_fetch();
         app
