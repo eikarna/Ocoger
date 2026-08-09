@@ -1,8 +1,5 @@
-mod core;
-mod services;
-mod ui;
-
 use clap::Parser;
+use ocoger::{core, ui};
 
 #[derive(Parser, Debug)]
 #[command(
