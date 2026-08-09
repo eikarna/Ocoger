@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crate::services::process_manager::ProcessManager;
 use crate::ui::app::{Action, App, Mode};
-use crate::ui::widgets::{agent_list, diff_view, form, picker};
+use crate::ui::widgets::{agent_list, diff_view, form, picker, preset_picker};
 
 /// Run the TUI until the user quits. Restores the terminal on all exits.
 pub async fn run(mut app: App) -> io::Result<()> {
@@ -98,6 +98,10 @@ async fn event_loop(
                 Mode::Diff => {
                     diff_view::render(f, f.area(), app.diff_text.as_deref());
                 }
+                Mode::Preset | Mode::PresetNameNew | Mode::PresetConfirmAll => {
+                    agent_list::render(f, chunks[1], &app.agents, app.cursor);
+                    preset_picker::render(f, f.area(), app);
+                }
             }
 
             agent_list::render_bottom(f, chunks[2], &app.log);
@@ -176,12 +180,37 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             (KeyCode::Char('a'), _) => app.toggle_all_action(),
             (KeyCode::Char('m'), _) => Action::OpenModelModal,
             (KeyCode::Char('p'), _) => Action::OpenPicker,
+            (KeyCode::Char('P'), _) => Action::OpenPresets,
             (KeyCode::Char('d'), _) => Action::OpenDiff,
             (KeyCode::Char('e'), _) | (KeyCode::Char('g'), _) => Action::OpenForm,
             _ => Action::Noop,
         },
         Mode::Diff => match key.code {
             KeyCode::Esc | KeyCode::Enter => Action::CloseDiff,
+            _ => Action::Noop,
+        },
+        Mode::Preset => match key.code {
+            KeyCode::Esc => Action::CancelModal,
+            KeyCode::Enter => Action::PresetAccept,
+            KeyCode::Backspace => Action::PresetBackspace,
+            KeyCode::Char('n') => Action::PresetNewStart,
+            KeyCode::Char('d') => Action::PresetDelete,
+            KeyCode::Char('A') => Action::PresetApplyAllStart,
+            KeyCode::Char('j') | KeyCode::Down => Action::MoveDown,
+            KeyCode::Char('k') | KeyCode::Up => Action::MoveUp,
+            KeyCode::Char(c) => Action::PresetInput(c),
+            _ => Action::Noop,
+        },
+        Mode::PresetNameNew => match key.code {
+            KeyCode::Esc => Action::CancelModal,
+            KeyCode::Enter => Action::PresetSaveNew,
+            KeyCode::Backspace => Action::PresetBackspace,
+            KeyCode::Char(c) => Action::PresetInput(c),
+            _ => Action::Noop,
+        },
+        Mode::PresetConfirmAll => match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => Action::ConfirmAllYes,
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::ConfirmAllNo,
             _ => Action::Noop,
         },
     };

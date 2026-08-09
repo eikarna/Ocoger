@@ -4,6 +4,7 @@
 
 use crate::core::agent_parser::AgentFile;
 use crate::core::jsonc_config::{ConfigItem, JsoncConfig};
+use crate::core::presets::{Preset, Presets};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +18,15 @@ pub enum Mode {
     Picker,
     /// Pre-save diff review (PRD §9). Read-only; Enter/Esc closes.
     Diff,
+    /// Preset picker modal (Phase 4). Live-filtered list of presets; Enter
+    /// applies to selected agents, `a` prompts apply-to-all, `n` captures from
+    /// selection, `d` deletes the highlighted preset.
+    Preset,
+    /// Name-entry modal for "capture selection as new preset" (n from Preset).
+    /// Stages the name in `modal_input`.
+    PresetNameNew,
+    /// Confirmation prompt before "apply current preset to ALL agents".
+    PresetConfirmAll,
 }
 
 /// Event-loop async actions the pure `update()` cannot perform itself (spawn/
@@ -47,6 +57,23 @@ pub enum Action {
     CloseDiff,
     OpenForm,
     OpenPicker,
+    /// Phase 4 Presets: open preset picker modal (P key, List mode).
+    OpenPresets,
+    /// Preset modal: typed char filters the preset list.
+    PresetInput(char),
+    PresetBackspace,
+    /// Enter on highlighted preset: apply to selected + close.
+    PresetAccept,
+    /// Preset modal n: open name-entry modal (capture selection as preset).
+    PresetNewStart,
+    /// Enter on the name-entry modal: save selection as preset.
+    PresetSaveNew,
+    /// Preset modal d: delete highlighted preset.
+    PresetDelete,
+    /// Preset modal Shift+A: prompt before applying to ALL agents.
+    PresetApplyAllStart,
+    ConfirmAllYes,
+    ConfirmAllNo,
     FormMove(bool),
     FormModify(i32),
     FormApply,
@@ -102,6 +129,17 @@ pub struct App {
     fetch_logged: bool,
     /// Cached pre-save diff text (recomputed on open).
     pub diff_text: Option<String>,
+    /// Phase 4 presets: in-memory list from `.ocoger/presets.jsonc`.
+    pub presets: Vec<Preset>,
+    /// Live filter of `presets` (recomputed on `PresetInput`).
+    pub preset_items: Vec<Preset>,
+    /// Highlighted row in the preset modal.
+    pub preset_cursor: usize,
+    /// Preset selected for "apply to all" confirm; also holds the preset being
+    /// captured while `Mode::PresetNameNew` is open so cancel can clean up.
+    pub pending_preset: Option<Preset>,
+    /// File handle for `.ocoger/presets.jsonc` (None if the file failed to load).
+    presets_io: Option<Presets>,
 }
 
 impl App {
@@ -143,7 +181,19 @@ impl App {
             fetch_tx,
             fetch_logged: false,
             diff_text: None,
+            presets: Vec::new(),
+            preset_items: Vec::new(),
+            preset_cursor: 0,
+            pending_preset: None,
+            presets_io: None,
         };
+        // Best-effort: load presets on boot; errors land in the log but never
+        // block the UI (a corrupt presets file shouldn't break agent editing).
+        if let Ok(ps) = Presets::load(&app.project_root) {
+            app.presets = ps.items.clone();
+            app.preset_items = ps.items.clone();
+            app.presets_io = Some(ps);
+        }
         app.spawn_catalog_fetch();
         app
     }
@@ -271,6 +321,17 @@ impl App {
                     }
                 }
                 Mode::ModelEdit | Mode::Picker | Mode::Diff => {}
+                Mode::Preset => {
+                    let n = self.preset_items.len();
+                    if n > 0 {
+                        self.preset_cursor = if matches!(action, MoveDown) {
+                            (self.preset_cursor + 1) % n
+                        } else {
+                            (self.preset_cursor + n - 1) % n
+                        };
+                    }
+                }
+                Mode::PresetNameNew | Mode::PresetConfirmAll => {}
             },
             OpenForm => {
                 if self.mode == Mode::List {
@@ -405,10 +466,122 @@ impl App {
                 }
             }
             CancelModal => {
-                // Discard staged input for ModelEdit or Picker.
-                if matches!(self.mode, Mode::ModelEdit | Mode::Picker) {
+                // Discard staged input for ModelEdit / Picker / Preset* modes.
+                if matches!(
+                    self.mode,
+                    Mode::ModelEdit
+                        | Mode::Picker
+                        | Mode::Preset
+                        | Mode::PresetNameNew
+                        | Mode::PresetConfirmAll
+                ) {
                     self.modal_input.clear();
+                    self.pending_preset = None;
                     self.mode = Mode::List;
+                }
+            }
+            OpenPresets => {
+                if self.mode == Mode::List && !self.presets.is_empty() {
+                    self.modal_input.clear();
+                    self.preset_cursor = 0;
+                    self.mode = Mode::Preset;
+                } else if self.mode == Mode::List {
+                    self.log(
+                        "No presets saved; save one first (no UI yet for creation from empty)"
+                            .to_string(),
+                    );
+                }
+            }
+            PresetInput(c) => {
+                if self.mode == Mode::Preset {
+                    self.modal_input.push(c);
+                    self.reload_preset_view();
+                } else if self.mode == Mode::PresetNameNew {
+                    self.modal_input.push(c);
+                }
+            }
+            PresetBackspace => {
+                if self.mode == Mode::Preset {
+                    self.modal_input.pop();
+                    self.reload_preset_view();
+                } else if self.mode == Mode::PresetNameNew {
+                    self.modal_input.pop();
+                }
+            }
+            PresetAccept => {
+                if self.mode == Mode::Preset {
+                    self.preset_apply_to_selected();
+                    self.mode = Mode::List;
+                } else if self.mode == Mode::PresetConfirmAll {
+                    // Enter on confirm = confirm
+                    self.preset_apply_to_all_confirmed();
+                    self.mode = Mode::List;
+                }
+            }
+            PresetNewStart => {
+                if self.mode == Mode::Preset {
+                    // Require at least one selected agent to capture.
+                    if self.selected_count() == 0 {
+                        self.log(
+                            "select agents first, then n to capture their settings".to_string(),
+                        );
+                    } else {
+                        self.modal_input.clear();
+                        self.mode = Mode::PresetNameNew;
+                    }
+                }
+            }
+            PresetSaveNew => {
+                if self.mode == Mode::PresetNameNew {
+                    self.capture_selected_as_preset();
+                    self.modal_input.clear();
+                    self.mode = Mode::Preset;
+                }
+            }
+            PresetDelete => {
+                if self.mode == Mode::Preset {
+                    if let Some(p) = self.preset_items.get(self.preset_cursor) {
+                        let name = p.name.clone();
+                        let mut save_err: Option<String> = None;
+                        let mut ok = false;
+                        if let Some(io) = self.presets_io.as_mut() {
+                            if io.remove(&name) {
+                                ok = true;
+                                if let Err(e) = io.save() {
+                                    save_err = Some(format!("preset delete save failed: {e}"));
+                                }
+                                self.presets = io.items.clone();
+                            }
+                        }
+                        if ok {
+                            self.reload_preset_view();
+                            self.log(format!("preset '{name}' deleted"));
+                        }
+                        if let Some(e) = save_err {
+                            self.log(e);
+                        }
+                    }
+                }
+            }
+            PresetApplyAllStart => {
+                if self.mode == Mode::Preset {
+                    if let Some(p) = self.preset_items.get(self.preset_cursor).cloned() {
+                        self.pending_preset = Some(p);
+                        self.mode = Mode::PresetConfirmAll;
+                    }
+                }
+            }
+            ConfirmAllYes => {
+                if self.mode == Mode::PresetConfirmAll {
+                    self.preset_apply_to_all_confirmed();
+                    self.mode = Mode::List;
+                }
+            }
+            ConfirmAllNo => {
+                if self.mode == Mode::PresetConfirmAll {
+                    self.pending_preset = None;
+                    self.mode = Mode::Preset;
+                    self.log("apply-to-all cancelled".to_string());
                 }
             }
             Quit => {
@@ -570,6 +743,101 @@ impl App {
         self.log(format!(
             "Staged model '{model}' on {count} agent(s); press s to save"
         ));
+    }
+
+    fn reload_preset_view(&mut self) {
+        let filter = self.modal_input.to_lowercase();
+        self.preset_items = self
+            .presets
+            .iter()
+            .filter(|p| {
+                filter.is_empty()
+                    || p.name.to_lowercase().contains(&filter)
+                    || p.description
+                        .as_deref()
+                        .map(|d| d.to_lowercase().contains(&filter))
+                        .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        if !self.preset_items.is_empty() && self.preset_cursor >= self.preset_items.len() {
+            self.preset_cursor = self.preset_items.len() - 1;
+        }
+    }
+
+    /// Apply the highlighted preset to all selected agents (`Enter` on Preset).
+    fn preset_apply_to_selected(&mut self) {
+        let Some(preset) = self.preset_items.get(self.preset_cursor).cloned() else {
+            return;
+        };
+        let fields = preset.to_fields();
+        let mut count = 0;
+        for a in self.agents.iter_mut().filter(|a| a.is_selected) {
+            a.update_models(&fields);
+            count += 1;
+        }
+        self.log(format!(
+            "preset '{}' applied to {count} selected agent(s) (s to save)",
+            preset.name
+        ));
+    }
+
+    /// Apply `pending_preset` to ALL agents (Shift+A confirmation arm).
+    fn preset_apply_to_all_confirmed(&mut self) {
+        let Some(preset) = self.pending_preset.take() else {
+            return;
+        };
+        let fields = preset.to_fields();
+        for a in self.agents.iter_mut() {
+            a.update_models(&fields);
+        }
+        self.log(format!(
+            "preset '{}' applied to ALL {} agent(s) (s to save)",
+            preset.name,
+            self.agents.len()
+        ));
+    }
+
+    /// Capture settings from selected agents into a new preset named by
+    /// `modal_input` (PresetNameNew modal), then persist.
+    fn capture_selected_as_preset(&mut self) {
+        let name = self.modal_input.trim().to_string();
+        if name.is_empty() {
+            self.log("preset name empty; cancelled".to_string());
+            return;
+        }
+        // Aggregate: pick first-selected agent as the source of truth.
+        let Some(src) = self.agents.iter().find(|a| a.is_selected) else {
+            self.log("no selected agents to capture from".to_string());
+            return;
+        };
+        let p = Preset {
+            name: name.clone(),
+            description: None,
+            model: src.frontmatter.model.clone(),
+            temperature: src.frontmatter.temperature,
+            top_k: src.frontmatter.top_k,
+            top_p: src.frontmatter.top_p,
+            reasoning_effort: src.frontmatter.reasoning_effort.clone(),
+        };
+        if let Some(io) = self.presets_io.as_mut() {
+            io.upsert(p.clone());
+            match io.save() {
+                Ok(()) => {
+                    self.presets = io.items.clone();
+                    self.reload_preset_view();
+                    self.log(format!("preset '{name}' stored"));
+                }
+                Err(e) => self.log(format!("preset save failed: {e}")),
+            }
+        } else {
+            // Lazy-initialize if initial load failed.
+            if let Ok(ps) = Presets::load(&self.project_root) {
+                self.presets = ps.items.clone();
+                self.preset_items = ps.items.clone();
+                self.presets_io = Some(ps);
+            }
+        }
     }
 
     fn save_dirty(&mut self) {
