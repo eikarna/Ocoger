@@ -155,12 +155,24 @@ mod tests {
     use super::*;
     use tokio::process::Command;
 
-    // Spawn a trivial child (cmd /c exit) through the manager — we're testing
-    // the manager state machine, not the child itself.
+    // Spawn a trivial short-lived child through the manager — we're testing
+    // the manager state machine, not the child itself. `cmd` on Windows,
+    // `sh` elsewhere (musl container images still ship /bin/sh via sh-symlink
+    // on alpine; if not, fall back to `true`).
     async fn spawn_cmd(manager: &mut ProcessManager) -> u32 {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/c", "echo", "test"])
-            .stdout(Stdio::piped())
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut c = Command::new("cmd");
+            c.args(["/c", "echo", "test"]);
+            c
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut c = Command::new("sh");
+            c.args(["-c", "echo test"]);
+            c
+        };
+        cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
         let mut child = cmd.spawn().unwrap();

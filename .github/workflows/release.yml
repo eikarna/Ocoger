@@ -20,18 +20,23 @@ jobs:
       matrix:
         include:
           # Windows — OpenCode ships here; CMD/PWSH/Windows Terminal/Alacritty/WezTerm.
-          - { os: windows-latest, target: x86_64-pc-windows-msvc,   suffix: .exe, archive: zip }
-          - { os: windows-latest, target: aarch64-pc-windows-msvc,  suffix: .exe, archive: zip }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,   suffix: .exe, archive: zip, test: true }
+          # aarch64-pc-windows-msvc can't execute its own tests on x64 hosts
+          # (ERROR_BAD_EXE_FORMAT 216) — build-only.
+          - { os: windows-latest, target: aarch64-pc-windows-msvc,  suffix: .exe, archive: zip, test: false }
           # glibc Linux — mainstream distros (Ubuntu/Debian/Fedora/Arch).
-          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu, suffix: "",   archive: tgz }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, suffix: "", archive: tgz }
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu, suffix: "",   archive: tgz, test: true }
+          # ARM-runner builds native aarch64 — tests can run there.
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, suffix: "", archive: tgz, test: true }
           # musl Linux — static binary; covers Alpine, Void-musl, postmarketOS,
           # and Android Termux (aarch64-musl runs under Termux's bionic-free env).
-          - { os: ubuntu-latest,  target: x86_64-unknown-linux-musl,  suffix: "", archive: tgz, musl: true }
-          - { os: ubuntu-latest,  target: aarch64-unknown-linux-musl, suffix: "", archive: tgz, musl: true }
+          # musl x86_64 runs on the ubuntu host directly; aarch64-musl is
+          # cross-compiled on x64 (no QEMU) so tests are skipped there.
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-musl,  suffix: "", archive: tgz, musl: true, test: true }
+          - { os: ubuntu-latest,  target: aarch64-unknown-linux-musl, suffix: "", archive: tgz, musl: true, test: false }
           # macOS — Terminal.app, iTerm2, Alacritty, WezTerm.
-          - { os: macos-13,       target: x86_64-apple-darwin,      suffix: "",   archive: tgz }
-          - { os: macos-14,       target: aarch64-apple-darwin,     suffix: "",   archive: tgz }
+          - { os: macos-13,       target: x86_64-apple-darwin,      suffix: "",   archive: tgz, test: true }
+          - { os: macos-14,       target: aarch64-apple-darwin,     suffix: "",   archive: tgz, test: true }
 
     steps:
       - name: Checkout
@@ -68,6 +73,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} --locked
 
       - name: Smoke test (cargo test)
+        if: matrix.test
         run: cargo test --release --target ${{ matrix.target }} --locked
 
       - name: Stage artifact
