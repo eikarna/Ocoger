@@ -2,17 +2,18 @@
 
 use crate::ui::app::{App, Panel};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use ratatui::Frame;
 
-fn band_block(title: &str, active: bool) -> Block<'static> {
+fn band_block(title: &str, active: bool, fg: ratatui::style::Color) -> Block<'static> {
     let mut b = Block::default()
         .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
         .title(title.to_string());
     if active {
-        b = b.border_style(Style::default().fg(Color::Yellow));
+        b = b.border_style(Style::default().fg(fg));
     }
     b
 }
@@ -29,7 +30,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         chunks[1],
         app,
         Panel::GlobalConfig,
-        " Global config (opencode.jsonc) ",
+        " Global config (opencode.jsonc ·global = read-only) ",
     );
 }
 
@@ -38,11 +39,7 @@ fn render_band(frame: &mut Frame, area: Rect, app: &App, band: Panel, title: &st
     let n = app.form_item_count_at(band);
     let mut items = Vec::with_capacity(n);
     for i in 0..n {
-        let row = format_row(
-            app.form_label_at(band, i),
-            app.form_value_at(band, i),
-            active && app.form_cursor == i,
-        );
+        let row = format_row_at(app, band, i, active);
         items.push(row);
     }
 
@@ -52,31 +49,52 @@ fn render_band(frame: &mut Frame, area: Rect, app: &App, band: Panel, title: &st
     }
     frame.render_stateful_widget(
         List::new(items)
-            .block(band_block(title, active))
+            .block(band_block(title, active, app.theme.accent))
             .highlight_style(Style::default()),
         area,
         &mut state,
     );
 }
 
-fn format_row(label: String, value: String, highlighted: bool) -> ListItem<'static> {
+fn format_row_at(app: &App, band: Panel, idx: usize, band_is_active: bool) -> ListItem<'static> {
+    let t = &app.theme;
+    let label = app.form_label_at(band, idx);
+    let mut val = app.form_value_at(band, idx);
+    let highlighted = band_is_active && app.form_cursor == idx;
+
+    // Read-only provenance marker on global-only keys.
+    let is_readonly = band == Panel::GlobalConfig && label.ends_with("·global");
+    let label_style = if is_readonly {
+        Style::default()
+            .fg(t.dim)
+            .add_modifier(ratatui::style::Modifier::ITALIC)
+    } else {
+        Style::default().fg(t.dim)
+    };
+    if is_readonly {
+        val = format!("{val} (ro)");
+    }
+
     ListItem::new(Line::from(vec![
-        Span::styled(format!(" {label:22}"), Style::default().fg(Color::Gray)),
+        Span::styled(format!(" {label:22}"), label_style),
         Span::styled(
-            value,
+            val,
             if highlighted {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(t.accent).bg(t.highlight_bg)
             } else {
-                Style::default()
+                Style::default().fg(t.fg)
             },
         ),
     ]))
     .style(if highlighted {
-        Style::default().bg(Color::DarkGray)
+        Style::default().bg(t.highlight_bg)
     } else {
         Style::default()
     })
 }
+
+// Legacy helper retained for readability; calls into `format_row_at` via app.
+#[allow(dead_code)]
 
 impl App {
     pub fn form_item_count_at(&self, band: Panel) -> usize {

@@ -36,11 +36,28 @@ pub enum ConfigError {
 }
 
 /// Located JSONC config file, preferring `opencode.jsonc` over `opencode.json`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfigOrigin {
+    /// From the file `save()` writes (project `opencode.jsonc`).
+    Primary,
+    /// Read-only display. Originates from a secondary source (typically the
+    /// per-user global config). Never written back.
+    GlobalReadOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigItem {
     pub label: String,
     pub value: String,
     pub keypath: Vec<String>,
+    #[serde(default)]
+    pub origin: ConfigOrigin,
+}
+
+impl Default for ConfigOrigin {
+    fn default() -> Self {
+        Self::Primary
+    }
 }
 
 pub struct JsoncConfig {
@@ -174,6 +191,7 @@ impl JsoncConfig {
                 label: label.into(),
                 value: value.unwrap_or("").into(),
                 keypath: keypath.iter().map(|s| s.to_string()).collect(),
+                origin: ConfigOrigin::Primary,
             });
         };
         push("model", v.get("model").and_then(Value::as_str), &["model"]);

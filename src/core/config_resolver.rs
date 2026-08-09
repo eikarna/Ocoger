@@ -204,25 +204,76 @@ pub fn merge_value(higher: &Value, lower: &Value) -> Value {
 /// cascade instead of just `<project>/opencode.jsonc`. Bootstraps the first
 /// project-level config file when missing.
 ///
-/// Behavior notes:
-/// - `existing = project file path` if there is one.
-/// - If not, the global config may be consulted for *read* values only;
-///   writes still land in `<project>/opencode.jsonc` (project-local breaking
-///   the user's primary config surface).
-pub fn ensure_loaded(project_root: &Path) -> Result<JsoncConfig, ResolveError> {
+/// Returns `(JsoncConfig, Vec<ConfigItem>)` where the items are *merged*
+/// across project + global: project items are `Primary` (editable); keys
+/// supplied only by global sources appear as `GlobalReadOnly` so the UI can
+/// show them without letting +/- write into ~/.config.
+pub fn ensure_loaded(
+    project_root: &Path,
+) -> Result<(JsoncConfig, Vec<super::jsonc_config::ConfigItem>), ResolveError> {
     let resolved = resolve(project_root)?;
-    let primary = resolved
+    let primary_path = resolved
         .resolution
         .primary_path
+        .clone()
         .unwrap_or_else(|| project_root.join("opencode.jsonc"));
-    if primary.is_file() {
-        // Hand off to existing reader so we don't re-parse raw bytes ourselves.
-        // (Cheap: reader just re-reads + parses; already-CST-safe.)
-        if let Some(cfg) = JsoncConfig::load_at_path(&primary)? {
-            return Ok(cfg);
+
+    // Always bind the editor to the project-root file. If it doesn't exist
+    // yet we hand back the synthesized default so `save()` creates it.
+    let project_path = project_root.join("opencode.jsonc");
+    let cfg = if project_path.is_file() {
+        JsoncConfig::load_at_path(&project_path)?.ok_or_else(|| {
+            ResolveError::Config(super::jsonc_config::ConfigError::Parse(
+                "load returned None".into(),
+            ))
+        })?
+    } else if primary_path == project_path || !primary_path.is_file() {
+        JsoncConfig::ensure_loaded(project_root).map_err(ResolveError::from)?
+    } else {
+        // Primary lives outside the project root (env override or global).
+        // We still let the UI edit it directly, but writes land there too.
+        JsoncConfig::load_at_path(&primary_path)?.unwrap_or_else(|| {
+            JsoncConfig::ensure_loaded(project_root).expect("fallback ensure_loaded")
+        })
+    };
+
+    let mut primary_items = cfg.config_items().map_err(ResolveError::Config)?;
+    // Only non-empty primary values occlude global keys — `config_items()`
+    // always emits placeholder rows (model/theme/default_provider/...) even
+    // when the underlying file omits them. Without this gate, an empty
+    // `"theme"` row in the project hides `"theme": "dracula"` from global.
+    let primary_keys: std::collections::HashSet<&str> = primary_items
+        .iter()
+        .filter(|i| !i.value.trim().is_empty())
+        .map(|i| i.label.as_str())
+        .collect();
+
+    // Emit read-only global items for keys the primary doesn't define.
+    let mut readonly: Vec<super::jsonc_config::ConfigItem> = Vec::new();
+    for source in resolved.resolution.sources.iter() {
+        if Some(source) == resolved.resolution.primary_path.as_ref() {
+            continue; // skip re-emitting the primary as read-only
+        }
+        let src_cfg = match JsoncConfig::load_at_path(source) {
+            Ok(Some(c)) => c,
+            _ => continue,
+        };
+        if let Ok(items) = src_cfg.config_items() {
+            for mut item in items {
+                if primary_keys.contains(item.label.as_str()) {
+                    continue; // key shadowed by primary
+                }
+                if item.value.is_empty() {
+                    continue; // skip empty fillers
+                }
+                item.origin = super::jsonc_config::ConfigOrigin::GlobalReadOnly;
+                item.label = format!("{}·global", item.label);
+                readonly.push(item);
+            }
         }
     }
-    JsoncConfig::ensure_loaded(project_root).map_err(ResolveError::from)
+    primary_items.extend(readonly);
+    Ok((cfg, primary_items))
 }
 
 #[cfg(test)]
@@ -333,7 +384,7 @@ mod tests {
         assert!(out.resolution.project_enabled);
         // ensure_loaded bootstraps a valid default in memory; save() then
         // persists the project-root JSONC.
-        let cfg = ensure_loaded(&dir).unwrap();
+        let (cfg, _items) = ensure_loaded(&dir).unwrap();
         cfg.save().unwrap();
         let expected = dir.join("opencode.jsonc");
         assert!(expected.is_file(), "bootstrapped default config");
@@ -397,6 +448,52 @@ mod tests {
         assert_eq!(v["model"], "glob", "project entry must be ignored");
         assert!(!out.resolution.project_enabled);
         std::env::remove_var("OPENCODE_DISABLE_PROJECT_CONFIG");
+        std::env::remove_var("OCOGAR_GLOBAL_CONFIG_DIR");
+    }
+
+    /// Regression for the reported bug: project file exists, plus a global
+    /// key project doesn't set. Before this change the global key was
+    /// invisible (config_items only read the project file). Now the merged
+    /// list exposes the foreign key as read-only.
+    #[test]
+    fn global_only_key_shows_as_readonly_in_items() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = temp_root("global-only");
+        let global = temp_root("global-only-xdg");
+        std::env::set_var("OCOGAR_GLOBAL_CONFIG_DIR", &global);
+        fs::write(dir.join("opencode.jsonc"), r#"{"model":"proj-model"}"#).unwrap();
+        fs::write(
+            global.join("opencode.jsonc"),
+            r#"{"theme":"dracula","provider":{"acme":{"options":{"baseURL":"https://acme"}}}}"#,
+        )
+        .unwrap();
+
+        let (_cfg, items) = ensure_loaded(&dir).unwrap();
+        let theme = items
+            .iter()
+            .find(|i| i.label == "theme·global")
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected 'theme·global' item, got {:?}",
+                    items.iter().map(|i| &i.label).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(theme.value, "dracula");
+        assert_eq!(
+            theme.origin,
+            super::super::jsonc_config::ConfigOrigin::GlobalReadOnly
+        );
+        // Project-only key still Primary.
+        let model = items.iter().find(|i| i.label == "model").unwrap();
+        assert_eq!(model.value, "proj-model");
+        assert_eq!(
+            model.origin,
+            super::super::jsonc_config::ConfigOrigin::Primary
+        );
+        // Provider global key surfaced.
+        assert!(items
+            .iter()
+            .any(|i| i.label == "provider.acme.base_url·global" && i.value == "https://acme"));
         std::env::remove_var("OCOGAR_GLOBAL_CONFIG_DIR");
     }
 }

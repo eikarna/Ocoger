@@ -155,7 +155,9 @@ pub struct App {
 impl App {
     pub fn new(agents: Vec<AgentFile>, project_root: PathBuf) -> Self {
         let (config_items, config) = match config_resolver::ensure_loaded(&project_root) {
-            Ok(c) => (c.config_items().unwrap_or_default(), Some(c)),
+            // Resolver returns (editable-config, merged item list). Items are
+            // already merged with GlobalReadOnly suffixes on foreign keys.
+            Ok((c, items)) => (items, Some(c)),
             Err(e) => {
                 let mut log = Vec::new();
                 log.push(format!("[config] load failed: {e}"));
