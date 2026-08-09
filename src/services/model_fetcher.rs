@@ -35,7 +35,9 @@ pub async fn fetch_v1_models(
         Some(k) => req.bearer_auth(k),
         None => req,
     };
-    let resp = timeout(Duration::from_secs(10), req.send())
+    // 30s timeout per endpoint. Local / LM-studio style servers can exceed
+    // 10s on a cold start and produce noisy false errors in the log.
+    let resp = timeout(Duration::from_secs(30), req.send())
         .await
         .map_err(|_| FetchError::Timeout)?
         .map_err(|e| FetchError::Http(e.to_string()))?;
@@ -58,7 +60,7 @@ pub async fn fetch_v1_models(
 /// Errors shown in the log pane (PRD FE-3/§4 error display).
 #[derive(Debug, thiserror::Error)]
 pub enum FetchError {
-    #[error("request timed out after 10s")]
+    #[error("request timed out after 30s")]
     Timeout,
     #[error("HTTP error: {0}")]
     Http(String),

@@ -46,6 +46,17 @@ pub struct AgentFile {
     pub is_dirty: bool,
     /// Raw YAML slice (not in ARCH sketch; required for fidelity-preserving save).
     pub(crate) raw_yaml: String,
+    /// Which scope supplied this agent at scan time (Project / Global).
+    pub origin: AgentOrigin,
+}
+
+/// Scope that supplied an agent at scan-time. Deterministic dedup order:
+/// Project shadows Global when filenames collide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentOrigin {
+    #[default]
+    Project,
+    Global,
 }
 
 impl AgentFile {
@@ -155,6 +166,7 @@ pub fn load_agent(path: &std::path::Path) -> Result<AgentFile, ParseError> {
         raw_body: parsed.raw_body,
         is_selected: false,
         is_dirty: false,
+        origin: AgentOrigin::default(),
     })
 }
 

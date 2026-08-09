@@ -32,14 +32,27 @@ async fn main() -> anyhow::Result<()> {
     let project = cli.project.canonicalize().unwrap_or(cli.project);
     tracing::info!(project = %project.display(), "ocoger starting");
 
-    // Scan .opencode/agents/*.md then parse each one; log but continue on errors.
+    // Scan project + global agent dirs, project shadowing global by filename.
     let mut agents = Vec::new();
-    match core::agent_scanner::scan_agents(&project) {
-        Ok(paths) => {
-            for p in paths {
-                match core::agent_parser::load_agent(&p) {
-                    Ok(a) => agents.push(a),
-                    Err(e) => tracing::warn!(path = %p.display(), error = %e, "skipping bad agent"),
+    match core::agent_scanner::scan_agents_cascaded(&project) {
+        Ok(entries) => {
+            for e in &entries {
+                match core::agent_parser::load_agent(&e.path) {
+                    Ok(a) => {
+                        let mut a = a;
+                        a.origin = match e.origin {
+                            core::agent_scanner::AgentOrigin::Project => {
+                                core::agent_parser::AgentOrigin::Project
+                            }
+                            core::agent_scanner::AgentOrigin::Global => {
+                                core::agent_parser::AgentOrigin::Global
+                            }
+                        };
+                        agents.push(a);
+                    }
+                    Err(err) => {
+                        tracing::warn!(path = %e.path.display(), error = %err, "skipping bad agent");
+                    }
                 }
             }
         }

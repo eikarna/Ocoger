@@ -187,6 +187,16 @@ impl Keymap {
         t.insert(def(Esc, false, false, false), Action::ConfirmAllNo);
         m.insert(Mode::PresetConfirmAll, t);
 
+        // ----- GlobalEditPrompt -----
+        let mut t = HashMap::new();
+        t.insert(def(Char('y'), false, false, false), Action::GlobalEditYes);
+        t.insert(def(Char('Y'), false, false, false), Action::GlobalEditYes);
+        t.insert(def(Enter, false, false, false), Action::GlobalEditYes);
+        t.insert(def(Char('n'), false, false, false), Action::GlobalEditNo);
+        t.insert(def(Char('N'), false, false, false), Action::GlobalEditNo);
+        t.insert(def(Esc, false, false, false), Action::GlobalEditNo);
+        m.insert(Mode::GlobalEditPrompt, t);
+
         Self { tables: m }
     }
 
@@ -277,6 +287,7 @@ fn parse_mode(s: &str) -> Option<Mode> {
         "preset" => Some(Mode::Preset),
         "preset_name_new" | "preset_new" => Some(Mode::PresetNameNew),
         "preset_confirm_all" | "preset_confirm" => Some(Mode::PresetConfirmAll),
+        "global_edit_prompt" => Some(Mode::GlobalEditPrompt),
         _ => None,
     }
 }
@@ -430,6 +441,8 @@ fn parse_action_in_mode(mode: Mode, name: &str) -> Option<Action> {
 
         (PresetConfirmAll, "yes") => Some(Action::ConfirmAllYes),
         (PresetConfirmAll, "no") => Some(Action::ConfirmAllNo),
+        (GlobalEditPrompt, "yes") => Some(Action::GlobalEditYes),
+        (GlobalEditPrompt, "no") => Some(Action::GlobalEditNo),
         _ => None,
     }
 }

@@ -79,6 +79,7 @@ async fn event_loop(
                 Mode::Preset => Style::default().fg(app.theme.syntax_keyword),
                 Mode::PresetNameNew => Style::default().fg(app.theme.warn),
                 Mode::PresetConfirmAll => Style::default().fg(app.theme.warn),
+                Mode::GlobalEditPrompt => Style::default().fg(app.theme.warn),
             };
             let dirty_style = if app.dirty_count() > 0 {
                 Style::default()
@@ -130,6 +131,40 @@ async fn event_loop(
                 Mode::Preset | Mode::PresetNameNew | Mode::PresetConfirmAll => {
                     agent_list::render(f, chunks[1], app);
                     preset_picker::render(f, f.area(), app);
+                }
+                Mode::GlobalEditPrompt => {
+                    form::render(f, chunks[1], app);
+                    // Rendered as a simple modal paragraph on top of the form.
+                    let w = 70u16;
+                    let h = 6u16;
+                    let area = f.area();
+                    let x = area.x + area.width.saturating_sub(w) / 2;
+                    let y = area.y + area.height.saturating_sub(h) / 2;
+                    let popup =
+                        ratatui::layout::Rect::new(x, y, w.min(area.width), h.min(area.height));
+                    let label = app
+                        .pending_global_edit_label()
+                        .unwrap_or_else(|| "(? )".to_string());
+                    let text = ratatui::text::Line::from(vec![
+                        ratatui::text::Span::raw("promote '"),
+                        ratatui::text::Span::styled(
+                            label,
+                            ratatui::style::Style::default()
+                                .fg(app.theme.warn)
+                                .add_modifier(ratatui::style::Modifier::BOLD),
+                        ),
+                        ratatui::text::Span::raw("' to project? [y] create override  [n] cancel"),
+                    ]);
+                    f.render_widget(ratatui::widgets::Clear, popup);
+                    f.render_widget(
+                        ratatui::widgets::Paragraph::new(text).block(
+                            ratatui::widgets::Block::default()
+                                .borders(ratatui::widgets::Borders::ALL)
+                                .border_type(ratatui::widgets::BorderType::Rounded)
+                                .title(" promote-global "),
+                        ),
+                        popup,
+                    );
                 }
             }
 
@@ -343,6 +378,7 @@ mod tests {
             is_selected: true,
             is_dirty: false,
             raw_yaml: "model: m".into(),
+            origin: crate::core::agent_parser::AgentOrigin::Project,
         };
         App::new(vec![a], PathBuf::from("."))
     }

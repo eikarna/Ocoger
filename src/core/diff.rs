@@ -68,7 +68,7 @@ mod tests {
 
     fn a(name: &str, model: &str) -> AgentFile {
         AgentFile {
-            path: std::path::PathBuf::from(format!(".opencode/agents/{name}.md")),
+            path: std::path::PathBuf::from(name),
             frontmatter: AgentFrontmatter {
                 model: model.into(),
                 temperature: None,
@@ -77,9 +77,10 @@ mod tests {
                 reasoning_effort: None,
             },
             raw_body: String::new(),
-            is_selected: true,
+            is_selected: false,
             is_dirty: true,
             raw_yaml: format!("model: {model}"),
+            origin: crate::core::agent_parser::AgentOrigin::Project,
         }
     }
 

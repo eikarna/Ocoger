@@ -279,11 +279,8 @@ pub fn ensure_loaded(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::test_support::ENV_LOCK;
     use std::fs;
-    use std::sync::Mutex;
-
-    // Tests mutate process env (XDG/OCOGAR/OPENCODE vars). Serialize.Test-safe Mutex shared only within this module.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

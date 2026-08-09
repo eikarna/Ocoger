@@ -26,6 +26,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     for (i, a) in agents.iter().enumerate() {
         let check = if a.is_selected { "[x]" } else { "[ ]" };
         let dirty = if a.is_dirty { "[*]" } else { "   " };
+        // Tiny scope marker (⊢ project, ⊢G global) after the filename.
+        let scope = match a.origin {
+            crate::core::agent_parser::AgentOrigin::Project => "  P",
+            crate::core::agent_parser::AgentOrigin::Global => "  G",
+        };
+        let scope_style = match a.origin {
+            crate::core::agent_parser::AgentOrigin::Project => Style::default().fg(t.accent),
+            crate::core::agent_parser::AgentOrigin::Global => Style::default().fg(t.dim),
+        };
         let marker = if i == cursor { "▌" } else { " " };
         let name = a
             .path
@@ -49,6 +58,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(format!("{marker} {check} ")),
             Span::styled(dirty, badge_style),
             Span::styled(format!(" {name:18}"), style),
+            Span::styled(scope, scope_style),
+            Span::raw(" "),
             Span::styled(a.frontmatter.model.clone(), Style::default().fg(t.dim)),
         ])));
     }

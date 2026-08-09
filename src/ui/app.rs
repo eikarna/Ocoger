@@ -30,6 +30,8 @@ pub enum Mode {
     PresetNameNew,
     /// Confirmation prompt before "apply current preset to ALL agents".
     PresetConfirmAll,
+    /// GlobalReadOnly edit attempt → "promote to project?" confirmation.
+    GlobalEditPrompt,
 }
 
 /// Event-loop async actions the pure `update()` cannot perform itself (spawn/
@@ -80,6 +82,11 @@ pub enum Action {
     PresetApplyAllStart,
     ConfirmAllYes,
     ConfirmAllNo,
+    /// GlobalReadOnly edit requested (+/- on a `·global` row): confirms user
+    /// intent. `Yes` removes the failed-write and re-runs edit marking the
+    /// promotion as a project-level write.
+    GlobalEditYes,
+    GlobalEditNo,
     FormMove(bool),
     FormModify(i32),
     FormApply,
@@ -131,6 +138,9 @@ pub struct App {
     /// Per-endpoint fetch report channel; drained by the event loop each tick.
     fetch_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     fetch_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    /// Per-endpoint dedup: lines already logged within this session. Prevents
+    /// the same unreachable-URL log from spamming the footer every frame.
+    fetch_logged_lines: std::collections::HashSet<String>,
     /// Guards against re-logging the same fetch merge repeatedly.
     fetch_logged: bool,
     /// Cached pre-save diff text (recomputed on open).
@@ -150,6 +160,10 @@ pub struct App {
     pub keymap: Keymap,
     /// Resolved visual theme (from `theme` key of merged config).
     pub theme: Theme,
+    /// Original (un-modified) label + step direction of the most recent edit
+    /// on a `GlobalReadOnly` config entry. Set when user tries +/- on a
+    /// `·global` row, consumed by `GlobalEditYes`.
+    pending_global_edit: Option<(String, i32)>,
 }
 
 impl App {
@@ -191,6 +205,7 @@ impl App {
             )),
             fetch_rx,
             fetch_tx,
+            fetch_logged_lines: std::collections::HashSet::new(),
             fetch_logged: false,
             diff_text: None,
             presets: Vec::new(),
@@ -200,6 +215,7 @@ impl App {
             presets_io: None,
             keymap: Keymap::defaults(),
             theme: Theme::default(),
+            pending_global_edit: None,
         };
         // Best-effort: load presets on boot; errors land in the log but never
         // block the UI (a corrupt presets file shouldn't break agent editing).
@@ -292,7 +308,9 @@ impl App {
     /// sorted) and drain the per-endpoint report channel into the log.
     pub fn sync_catalog_from_shared(&mut self) {
         while let Ok(line) = self.fetch_rx.try_recv() {
-            self.log_push(line);
+            if self.fetch_logged_lines.insert(line.clone()) {
+                self.log_push(line);
+            }
         }
         let snap = match self.shared_catalog.try_read() {
             Ok(g) => g.clone(),
@@ -382,7 +400,7 @@ impl App {
                         };
                     }
                 }
-                Mode::PresetNameNew | Mode::PresetConfirmAll => {}
+                Mode::PresetNameNew | Mode::PresetConfirmAll | Mode::GlobalEditPrompt => {}
             },
             OpenForm => {
                 if self.mode == Mode::List {
@@ -641,6 +659,27 @@ impl App {
                     self.log("apply-to-all cancelled".to_string());
                 }
             }
+            GlobalEditYes => {
+                if self.mode == Mode::GlobalEditPrompt {
+                    self.mode = Mode::Form;
+                    // Re-run the edit path with promotion enabled: this is the
+                    // same FormModify tick but on a fresh `pending_global_edit`
+                    // (label captured when the prompt was raised).
+                    if let Some((label, d)) = self.pending_global_edit.take() {
+                        if let Some(err) = self.promote_global_to_project(&label, d) {
+                            self.log(err);
+                        } else {
+                            self.log(format!("promoted '{label}' to project override"));
+                        }
+                    }
+                }
+            }
+            GlobalEditNo => {
+                if self.mode == Mode::GlobalEditPrompt {
+                    self.pending_global_edit = None;
+                    self.mode = Mode::Form;
+                }
+            }
             Quit => {
                 // Guard against data loss (BRD: don't destroy unsaved edits).
                 if self.dirty_count() == 0 {
@@ -720,6 +759,17 @@ impl App {
 
     fn config_set_current_value(&mut self, d: i32) -> Option<String> {
         let item = self.config_items.get(self.form_cursor)?.clone();
+        // Read-only entries (sourced from the global config) trigger a
+        // promotion flow: prompt for confirmation, and only if the user
+        // accepts does the write go into the project file.
+        if matches!(
+            item.origin,
+            crate::core::jsonc_config::ConfigOrigin::GlobalReadOnly
+        ) {
+            self.pending_global_edit = Some((item.label.clone(), d));
+            self.mode = Mode::GlobalEditPrompt;
+            return None;
+        }
         if let Some(cfg) = self.config.as_mut() {
             // single-char preview → better to have a small +/- helper for now.
             let cur: i32 = item.value.parse().unwrap_or(0);
@@ -729,6 +779,34 @@ impl App {
             }
         }
         self.config_items = self.config.as_ref()?.config_items().ok()?;
+        None
+    }
+
+    /// Exposed for the confirm-modal render; label minus the `·global` suffix.
+    pub fn pending_global_edit_label(&self) -> Option<String> {
+        self.pending_global_edit
+            .as_ref()
+            .map(|(l, _)| l.trim_end_matches("·global").to_string())
+    }
+
+    /// Called after the user confirms a `GlobalReadOnly` promotion. Writes
+    /// `new_val` into the project file for the original keypath.
+    fn promote_global_to_project(&mut self, label: &str, d: i32) -> Option<String> {
+        // Strip the `·global` decoration.
+        let plain = label.trim_end_matches("·global");
+        let item = self
+            .config_items
+            .iter()
+            .find(|i| i.label.trim_end_matches("·global") == plain)?
+            .clone();
+        let cfg = self.config.as_mut()?;
+        let cur: i32 = item.value.parse().unwrap_or(0);
+        let new_val = (cur + d).to_string();
+        if let Err(e) = cfg.set_nested_str(item.keypath.iter().map(|s| s.as_str()), &new_val) {
+            return Some(format!("promote {plain} failed: {e}"));
+        }
+        // Refresh rows so the formerly-global row now shows as Primary.
+        self.config_items = cfg.config_items().ok()?;
         None
     }
 
@@ -955,6 +1033,7 @@ mod tests {
             is_selected: false,
             is_dirty: false,
             raw_yaml: "model: m".into(),
+            origin: crate::core::agent_parser::AgentOrigin::Project,
         }
     }
 
