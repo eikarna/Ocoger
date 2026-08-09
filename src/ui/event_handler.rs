@@ -140,80 +140,135 @@ async fn maybe_restart(proc_mgr: &mut ProcessManager, app: &mut App, action: Act
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Action {
-    let action = match app.mode {
-        Mode::ModelEdit => match key.code {
-            KeyCode::Esc => Action::CancelModal,
-            KeyCode::Enter => Action::ApplyModelModal,
-            KeyCode::Backspace => Action::ModalBackspace,
-            KeyCode::Char(c) => Action::ModalInput(c),
-            _ => Action::Noop,
+    use crate::core::keymap::{KeyCodeShape, KeySpec};
+    // Translate crossterm KeyEvent into our pure KeySpec. Crossterm reports
+    // SHIFT+A as `Char('A')` with SHIFT modifier; we canonicalize by
+    // lowercasing when needed so "<S-a>" and "A" end up the same shape.
+    let spec = match key.code {
+        KeyCode::Char(c) => {
+            let (c_norm, extra_shift) = (c, false);
+            KeySpec {
+                code: KeyCodeShape::Char(c_norm),
+                ctrl: key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL),
+                shift: key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT)
+                    || extra_shift,
+                alt: key.modifiers.contains(crossterm::event::KeyModifiers::ALT),
+            }
+        }
+        KeyCode::Enter => KeySpec {
+            code: KeyCodeShape::Enter,
+            ctrl: false,
+            shift: false,
+            alt: false,
         },
-        Mode::Picker => match key.code {
-            KeyCode::Esc => Action::CancelModal,
-            KeyCode::Enter => Action::PickerAccept,
-            KeyCode::Backspace => Action::PickerBackspace,
-            KeyCode::Char(c) => Action::PickerInput(c),
-            _ => Action::Noop,
+        KeyCode::Esc => KeySpec {
+            code: KeyCodeShape::Esc,
+            ctrl: false,
+            shift: false,
+            alt: false,
         },
-        Mode::Form => match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => Action::FormExit,
-            KeyCode::Char('j') | KeyCode::Down => Action::FormMove(true),
-            KeyCode::Char('k') | KeyCode::Up => Action::FormMove(false),
-            KeyCode::Tab => Action::FormExit, // TODO Tab pane-switch in later phase
-            KeyCode::Char('e') | KeyCode::Char('g') => Action::FormExit,
-            KeyCode::Char('+') | KeyCode::Char('=') => Action::FormModify(1),
-            KeyCode::Char('-') => Action::FormModify(-1),
-            KeyCode::Enter => Action::FormApply,
-            _ => Action::Noop,
+        KeyCode::Backspace => KeySpec {
+            code: KeyCodeShape::Backspace,
+            ctrl: false,
+            shift: false,
+            alt: false,
         },
-        Mode::List => match (
-            key.code,
-            key.modifiers
-                .contains(crossterm::event::KeyModifiers::CONTROL),
-        ) {
-            (KeyCode::Esc, _) | (KeyCode::Char('q'), _) => Action::Quit,
-            (KeyCode::Char('s'), _) => Action::Save,
-            (KeyCode::Char('r'), _) => Action::Restart,
-            (KeyCode::Char('j'), _) | (KeyCode::Down, _) => Action::MoveDown,
-            (KeyCode::Char('k'), _) | (KeyCode::Up, _) => Action::MoveUp,
-            (KeyCode::Char(' '), _) => Action::ToggleSelectCurrent,
-            (KeyCode::Char('a'), _) => app.toggle_all_action(),
-            (KeyCode::Char('m'), _) => Action::OpenModelModal,
-            (KeyCode::Char('p'), _) => Action::OpenPicker,
-            (KeyCode::Char('P'), _) => Action::OpenPresets,
-            (KeyCode::Char('d'), _) => Action::OpenDiff,
-            (KeyCode::Char('e'), _) | (KeyCode::Char('g'), _) => Action::OpenForm,
-            _ => Action::Noop,
+        KeyCode::Tab => KeySpec {
+            code: KeyCodeShape::Tab,
+            ctrl: false,
+            shift: false,
+            alt: false,
         },
-        Mode::Diff => match key.code {
-            KeyCode::Esc | KeyCode::Enter => Action::CloseDiff,
-            _ => Action::Noop,
+        KeyCode::Up => KeySpec {
+            code: KeyCodeShape::Up,
+            ctrl: false,
+            shift: false,
+            alt: false,
         },
-        Mode::Preset => match key.code {
-            KeyCode::Esc => Action::CancelModal,
-            KeyCode::Enter => Action::PresetAccept,
-            KeyCode::Backspace => Action::PresetBackspace,
-            KeyCode::Char('n') => Action::PresetNewStart,
-            KeyCode::Char('d') => Action::PresetDelete,
-            KeyCode::Char('A') => Action::PresetApplyAllStart,
-            KeyCode::Char('j') | KeyCode::Down => Action::MoveDown,
-            KeyCode::Char('k') | KeyCode::Up => Action::MoveUp,
-            KeyCode::Char(c) => Action::PresetInput(c),
-            _ => Action::Noop,
+        KeyCode::Down => KeySpec {
+            code: KeyCodeShape::Down,
+            ctrl: false,
+            shift: false,
+            alt: false,
         },
-        Mode::PresetNameNew => match key.code {
-            KeyCode::Esc => Action::CancelModal,
-            KeyCode::Enter => Action::PresetSaveNew,
-            KeyCode::Backspace => Action::PresetBackspace,
-            KeyCode::Char(c) => Action::PresetInput(c),
-            _ => Action::Noop,
+        KeyCode::Left => KeySpec {
+            code: KeyCodeShape::Left,
+            ctrl: false,
+            shift: false,
+            alt: false,
         },
-        Mode::PresetConfirmAll => match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => Action::ConfirmAllYes,
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => Action::ConfirmAllNo,
-            _ => Action::Noop,
+        KeyCode::Right => KeySpec {
+            code: KeyCodeShape::Right,
+            ctrl: false,
+            shift: false,
+            alt: false,
         },
+        _ => return Action::Noop,
     };
+
+    // First try an exact lookup. If none, fall back to an alternative that
+    // treats an uppercase char as shift-modified lowercase (crossterm on
+    // Windows reports `P` + SHIFT for both `<S-p>` and bare `P`).
+    let action = app.keymap.lookup(app.mode, spec).or_else(|| {
+        if let (KeyCodeShape::Char(c), true) = (spec.code, spec.shift) {
+            // Try shift=true with the lowercase form, and shift=false as typed.
+            let lower = spec_with(
+                KeyCodeShape::Char(c.to_ascii_lowercase()),
+                spec.ctrl,
+                true,
+                spec.alt,
+            );
+            let upper_no_shift = spec_with(KeyCodeShape::Char(c), spec.ctrl, false, spec.alt);
+            app.keymap
+                .lookup(app.mode, lower)
+                .or_else(|| app.keymap.lookup(app.mode, upper_no_shift))
+        } else if let KeyCodeShape::Char(c) = spec.code {
+            // Typing 'a' may also match a user keymap entry `<S-a>` if crossterm
+            // didn't pass SHIFT through.
+            let shifted = spec_with(KeyCodeShape::Char(c), spec.ctrl, true, spec.alt);
+            app.keymap.lookup(app.mode, shifted)
+        } else {
+            None
+        }
+    });
+
+    let action = match action {
+        Some(a) => a,
+        None => {
+            // Modal fallthroughs: these modes accept free-text input, so any
+            // Char that isn't bound to an action still routes to the buffer.
+            match (app.mode, key.code) {
+                (Mode::ModelEdit, KeyCode::Char(c)) => Action::ModalInput(c),
+                (Mode::Picker, KeyCode::Char(c)) => Action::PickerInput(c),
+                (Mode::Preset, KeyCode::Char(c)) => Action::PresetInput(c),
+                (Mode::PresetNameNew, KeyCode::Char(c)) => Action::PresetInput(c),
+                (Mode::ModelEdit, KeyCode::Backspace) => Action::ModalBackspace,
+                (Mode::Picker, KeyCode::Backspace) => Action::PickerBackspace,
+                (Mode::Preset, KeyCode::Backspace) => Action::PresetBackspace,
+                (Mode::PresetNameNew, KeyCode::Backspace) => Action::PresetBackspace,
+                _ => Action::Noop,
+            }
+        }
+    };
+
     app.update(action.clone());
     action
+}
+
+fn spec_with(
+    code: crate::core::keymap::KeyCodeShape,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> crate::core::keymap::KeySpec {
+    crate::core::keymap::KeySpec {
+        code,
+        ctrl,
+        shift,
+        alt,
+    }
 }

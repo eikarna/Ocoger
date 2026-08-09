@@ -4,10 +4,11 @@
 
 use crate::core::agent_parser::AgentFile;
 use crate::core::jsonc_config::{ConfigItem, JsoncConfig};
+use crate::core::keymap::Keymap;
 use crate::core::presets::{Preset, Presets};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
     List,
     /// Batch model input modal (PRD FE-1.3). Value staged in `modal_input`.
@@ -44,11 +45,14 @@ pub enum Panel {
     GlobalConfig,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     MoveDown,
     MoveUp,
     ToggleSelectCurrent,
+    /// `a` in List — alias that correctly picks Select-All vs Deselect-All
+    /// based on current state. Mirrors prior `toggle_all_action()` behavior.
+    ToggleAllAlias,
     SelectAll,
     DeselectAll,
     OpenModelModal,
@@ -140,6 +144,8 @@ pub struct App {
     pub pending_preset: Option<Preset>,
     /// File handle for `.ocoger/presets.jsonc` (None if the file failed to load).
     presets_io: Option<Presets>,
+    /// Resolved keybindings for the current session (defaults + global + project).
+    pub keymap: Keymap,
 }
 
 impl App {
@@ -186,6 +192,7 @@ impl App {
             preset_cursor: 0,
             pending_preset: None,
             presets_io: None,
+            keymap: Keymap::defaults(),
         };
         // Best-effort: load presets on boot; errors land in the log but never
         // block the UI (a corrupt presets file shouldn't break agent editing).
@@ -193,6 +200,12 @@ impl App {
             app.presets = ps.items.clone();
             app.preset_items = ps.items.clone();
             app.presets_io = Some(ps);
+        }
+        // Resolve keymap: defaults -> global -> project,.warnings go to footer log.
+        let (km, km_warnings) = Keymap::load(&app.project_root);
+        app.keymap = km;
+        for w in km_warnings {
+            app.log(w);
         }
         app.spawn_catalog_fetch();
         app
@@ -421,6 +434,12 @@ impl App {
             ToggleSelectCurrent => {
                 if self.mode == Mode::List {
                     self.toggle()
+                }
+            }
+            ToggleAllAlias => {
+                if self.mode == Mode::List {
+                    let target = !(self.selected_count() == self.agents.len());
+                    self.set_all(target);
                 }
             }
             SelectAll => {

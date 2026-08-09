@@ -24,6 +24,7 @@ thiserror = "2"
 jsonc-parser = { version = "0.33.1", features = ["cst", "serde"] }
 regex = "1.13.1"
 similar = "3"
+toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
