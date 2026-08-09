@@ -34,6 +34,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         }
     );
     let t = &app.theme;
+    let loading = if app.fetch_pending > 0 {
+        " (loading models...)"
+    } else {
+        ""
+    };
+    let focus_tag = match app.modal_focus {
+        crate::ui::app::ModalFocus::Input => "INPUT — Tab: list",
+        crate::ui::app::ModalFocus::List => "LIST — Tab: type",
+    };
     frame.render_widget(
         Paragraph::new(input)
             .block(
@@ -41,7 +50,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(t.accent))
                     .border_type(ratatui::widgets::BorderType::Rounded)
-                    .title(" filter "),
+                    .title(format!(" filter [{focus_tag}]{loading} ")),
             )
             .wrap(Wrap { trim: false }),
         chunks[0],

@@ -268,6 +268,10 @@ pub(crate) fn dispatch_key_if_press(app: &mut App, key: KeyEvent) -> Option<Acti
 /// it and log the result.
 async fn maybe_restart(proc_mgr: &mut ProcessManager, app: &mut App, action: Action) {
     use Action::*;
+    if matches!(action, RefetchModels) {
+        app.spawn_catalog_fetch();
+        return;
+    }
     let want_restart = match action {
         Restart => true,
         // App::update(Save) already saved dirty agents; `log_has_recent_save`
@@ -287,6 +291,40 @@ async fn maybe_restart(proc_mgr: &mut ProcessManager, app: &mut App, action: Act
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Action {
+    // Focus lock: in Picker/Preset Input focus, printable chars go to the
+    // filter *before* the keymap is consulted, so bound keys like j/k/n/d
+    // still type. Tab flips focus. Non-char keys (arrows/Enter/Esc) fall
+    // through to the keymap in either focus.
+    let in_pickerish = matches!(app.mode, Mode::Picker | Mode::Preset);
+    if in_pickerish && app.modal_focus == crate::ui::app::ModalFocus::Input {
+        match key.code {
+            KeyCode::Tab => {
+                app.update(Action::ToggleModalFocus);
+                return Action::ToggleModalFocus;
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                let action = if app.mode == Mode::Picker {
+                    Action::PickerInput(c)
+                } else {
+                    Action::PresetInput(c)
+                };
+                app.update(action.clone());
+                return action;
+            }
+            _ => {} // fall through to keymap for arrows/Enter/Esc/Backspace
+        }
+    }
+    handle_key_via_keymap(app, key)
+}
+
+/// Tab pressed while a picker modal is in List focus.
+fn in_pickerish_list_focus(app: &App, key: KeyEvent) -> bool {
+    matches!(app.mode, Mode::Picker | Mode::Preset)
+        && app.modal_focus == crate::ui::app::ModalFocus::List
+        && matches!(key.code, KeyCode::Tab)
+}
+
+fn handle_key_via_keymap(app: &mut App, key: KeyEvent) -> Action {
     use crate::core::keymap::{KeyCodeShape, KeySpec};
     // Translate crossterm KeyEvent into our pure KeySpec. Crossterm reports
     // SHIFT+A as `Char('A')` with SHIFT modifier; we canonicalize by
@@ -411,6 +449,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     let action = match action {
         Some(a) => a,
         None => {
+            // Tab in List focus flips back to Input.
+            if in_pickerish_list_focus(app, key) {
+                app.update(Action::ToggleModalFocus);
+                return Action::ToggleModalFocus;
+            }
             // Modal fallthroughs: these modes accept free-text input, so any
             // Char that isn't bound to an action still routes to the buffer.
             match (app.mode, key.code) {
@@ -569,6 +612,52 @@ mod tests {
         assert_eq!(a, Some(Action::ToggleSelectRow(0)));
         app.update(a.unwrap());
         assert!(!app.agents[0].is_selected);
+    }
+
+    #[test]
+    fn picker_input_focus_locks_j_k_to_filter_text() {
+        let mut app = scratch_app();
+        app.agents[0].is_selected = true;
+        app.update(Action::OpenPicker);
+        assert_eq!(app.mode, Mode::Picker);
+        assert_eq!(app.modal_focus, crate::ui::app::ModalFocus::Input);
+        // 'j' and 'k' must type into the filter, not move the cursor.
+        let j = dispatch_key_if_press(&mut app, key(KeyCode::Char('j'), KeyEventKind::Press));
+        let k = dispatch_key_if_press(&mut app, key(KeyCode::Char('k'), KeyEventKind::Press));
+        assert_eq!(j, Some(Action::PickerInput('j')));
+        assert_eq!(k, Some(Action::PickerInput('k')));
+        assert_eq!(app.modal_input, "jk");
+        assert_eq!(app.picker_cursor, 0, "cursor untouched while typing");
+        // Arrows still navigate in Input focus.
+        dispatch_key_if_press(&mut app, key(KeyCode::Down, KeyEventKind::Press));
+        // Clear the filter so the list has rows to move through, then Tab
+        // flips to List focus; now j/k navigate.
+        app.modal_input.clear();
+        app.update(Action::PickerBackspace); // no-op safe; triggers view reload below
+        app.modal_input.clear();
+        app.update(Action::ToggleModalFocus); // exercise update path too
+        app.update(Action::ToggleModalFocus);
+        dispatch_key_if_press(&mut app, key(KeyCode::Tab, KeyEventKind::Press));
+        assert_eq!(app.modal_focus, crate::ui::app::ModalFocus::List);
+        assert!(app.picker_items.len() > 1, "unfiltered catalog has rows");
+        let before = app.picker_cursor;
+        let jd = dispatch_key_if_press(&mut app, key(KeyCode::Char('j'), KeyEventKind::Press));
+        assert_eq!(jd, Some(Action::MoveDown));
+        assert_ne!(app.picker_cursor, before, "j moves cursor in List focus");
+        // Tab back to Input.
+        dispatch_key_if_press(&mut app, key(KeyCode::Tab, KeyEventKind::Press));
+        assert_eq!(app.modal_focus, crate::ui::app::ModalFocus::Input);
+    }
+
+    #[test]
+    fn refetch_models_dispatches_and_logs() {
+        let mut app = scratch_app();
+        let r = dispatch_key_if_press(
+            &mut app,
+            key_with_mods(KeyCode::Char('R'), KeyModifiers::SHIFT),
+        );
+        assert_eq!(r, Some(Action::RefetchModels));
+        assert!(app.log.iter().any(|m| m.contains("re-fetching")));
     }
 
     #[test]

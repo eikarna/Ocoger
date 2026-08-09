@@ -105,6 +105,7 @@ impl Keymap {
         t.insert(def(Esc, false, false, false), Action::Quit);
         t.insert(def(Char('s'), false, false, false), Action::Save);
         t.insert(def(Char('r'), false, false, false), Action::Restart);
+        t.insert(def(Char('R'), false, true, false), Action::RefetchModels);
         t.insert(def(Char('j'), false, false, false), Action::MoveDown);
         t.insert(def(Down, false, false, false), Action::MoveDown);
         t.insert(def(Char('k'), false, false, false), Action::MoveUp);
@@ -413,6 +414,7 @@ fn parse_action_in_mode(mode: Mode, name: &str) -> Option<Action> {
         (List, "quit") => Some(Action::Quit),
         (List, "save") => Some(Action::Save),
         (List, "restart") => Some(Action::Restart),
+        (List, "refetch_models") => Some(Action::RefetchModels),
         (List, "move_down") => Some(Action::MoveDown),
         (List, "move_up") => Some(Action::MoveUp),
         (List, "select") | (List, "toggle") => Some(Action::ToggleSelectCurrent),

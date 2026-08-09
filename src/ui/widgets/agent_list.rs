@@ -154,7 +154,7 @@ pub fn render_bottom(frame: &mut Frame, area: Rect, app: &App) {
         chunks[0],
     );
 
-    let hint = "[j/k] nav  [Space] tag  [a] all  [m] model  [p] picker  [P] presets  [d] diff  [x] discard  [s] save  [q] quit";
+    let hint = "[j/k] nav  [Space] tag  [a] all  [m] model  [p] picker  [P] presets  [d] diff  [x] discard  [R] refetch  [s] save  [q] quit";
     frame.render_widget(
         Paragraph::new(hint).style(Style::default().fg(t.dim)),
         chunks[1],

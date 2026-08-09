@@ -49,6 +49,15 @@ pub enum Panel {
     GlobalConfig,
 }
 
+/// Focus inside modal pickers (Model picker / Preset picker).
+/// `Input` locks every printable char to the filter text box; `List` unlocks
+/// the navigation/action keys (j/k/n/d/A). Tab toggles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModalFocus {
+    Input,
+    List,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     MoveDown,
@@ -114,6 +123,10 @@ pub enum Action {
     Save,
     /// Force-restart process (PRD `r`).
     Restart,
+    /// Re-run provider model fetch (R in List). Event loop respawns fetcher.
+    RefetchModels,
+    /// Tab in Picker/Preset: toggle Input <-> List focus.
+    ToggleModalFocus,
     Quit,
     Noop,
 }
@@ -126,6 +139,10 @@ pub struct App {
     pub mode: Mode,
     /// Staged string while in `ModelEdit` or `Picker` mode.
     pub modal_input: String,
+    /// Focus lock for picker modals; see `ModalFocus`.
+    pub modal_focus: ModalFocus,
+    /// Number of in-flight provider fetches; >0 means catalog may still grow.
+    pub fetch_pending: u32,
     /// Form band (agent params vs global config) whose cursor is active.
     pub form_band: Panel,
     /// Current row index within the active band.
@@ -204,6 +221,8 @@ impl App {
             project_root,
             mode: Mode::List,
             modal_input: String::new(),
+            modal_focus: ModalFocus::Input,
+            fetch_pending: 0,
             form_band: Panel::AgentParams,
             form_cursor: 0,
             config_items,
@@ -288,12 +307,15 @@ impl App {
     }
 
     /// Spawn a background refresh; results feed `shared_catalog`.
-    pub fn spawn_catalog_fetch(&self) {
+    /// `fetch_pending` is bumped by the caller (or the event loop) so the UI
+    /// can show a "loading" badge; the task decrements it via `fetch_tx`.
+    pub fn spawn_catalog_fetch(&mut self) {
         use crate::services::model_fetcher;
         let urls = self.provider_base_urls();
         if urls.is_empty() {
             return;
         }
+        self.fetch_pending = self.fetch_pending.saturating_add(urls.len() as u32);
         let shared = self.shared_catalog.clone();
         let report_tx = self.fetch_tx.clone();
         // Read API key pointer if exposed via config (env var name). Currently
@@ -319,6 +341,8 @@ impl App {
                 };
                 let _ = report_tx.send(line);
             }
+            // Signal completion so the UI can clear the loading badge.
+            let _ = report_tx.send("[model-fetch] ::done::".to_string());
         });
     }
 
@@ -326,6 +350,10 @@ impl App {
     /// sorted) and drain the per-endpoint report channel into the log.
     pub fn sync_catalog_from_shared(&mut self) {
         while let Ok(line) = self.fetch_rx.try_recv() {
+            if line == "[model-fetch] ::done::" {
+                self.fetch_pending = 0;
+                continue;
+            }
             if self.fetch_logged_lines.insert(line.clone()) {
                 self.log_push(line);
             }
@@ -441,6 +469,7 @@ impl App {
                 Mode::List if self.selected_count() > 0 && !self.picker_catalog.is_empty() => {
                     self.modal_input.clear();
                     self.picker_cursor = 0;
+                    self.modal_focus = ModalFocus::Input;
                     self.mode = Mode::Picker;
                 }
                 Mode::Form => {
@@ -632,6 +661,7 @@ impl App {
                 ) {
                     self.modal_input.clear();
                     self.pending_preset = None;
+                    self.modal_focus = ModalFocus::Input;
                     self.mode = Mode::List;
                 }
             }
@@ -639,6 +669,7 @@ impl App {
                 if self.mode == Mode::List && !self.presets.is_empty() {
                     self.modal_input.clear();
                     self.preset_cursor = 0;
+                    self.modal_focus = ModalFocus::Input;
                     self.mode = Mode::Preset;
                 } else if self.mode == Mode::List {
                     self.log(
@@ -758,6 +789,23 @@ impl App {
                 if self.mode == Mode::GlobalEditPrompt {
                     self.pending_global_edit = None;
                     self.mode = Mode::Form;
+                }
+            }
+            RefetchModels => {
+                // Event loop performs the actual respawn (async). Here we only
+                // clear dedup state so the fresh fetch logs again.
+                if self.mode == Mode::List {
+                    self.fetch_logged = false;
+                    self.fetch_logged_lines.clear();
+                    self.log("re-fetching model catalogs...".to_string());
+                }
+            }
+            ToggleModalFocus => {
+                if matches!(self.mode, Mode::Picker | Mode::Preset) {
+                    self.modal_focus = match self.modal_focus {
+                        ModalFocus::Input => ModalFocus::List,
+                        ModalFocus::List => ModalFocus::Input,
+                    };
                 }
             }
             Quit => {
