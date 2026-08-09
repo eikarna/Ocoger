@@ -43,10 +43,10 @@
 - [x] **[P2]** JSONC path fallback: `JsoncConfig::ensure_loaded` returns defaults on first run and persists via atomic write (covers "no opencode.jsonc yet" case).
 
 ## 5. Process Supervision & Automation
-- [ ] **[P1]** Implement `ProcessManager` struct using `tokio::process`.
-- [ ] **[P1]** Build cross-platform signal sender for graceful process shutdown (`SIGTERM`/Windows kill).
-- [ ] **[P1]** Bind `Ctrl+S` hotkey to run atomic file save + process restart sequence.
-- [ ] **[P2]** Pipe subprocess `stdout` and `stderr` streams into `tui` bottom drawer widget.
+- [x] **[P1]** Implement `ProcessManager` struct using `tokio::process`. *(`src/services/process_manager.rs`; OS-aware `find_executable` for `cmd`/`opencode.cmd`/`opencode` win32 vs `opencode` unix; spawn/kill/restart.)*
+- [x] **[P1]** Build cross-platform signal sender for graceful process shutdown (`SIGTERM`/Windows kill). *(`Ctrl+S`→`kill()` uses `TerminateProcess` on Windows via `Child::kill()`; 3s `wait_timeout`.)*
+- [x] **[P1]** Bind `Ctrl+S` hotkey to run atomic file save + process restart sequence. *(`App::save_and_check_restart()` returns `true` only when files actually changed; `event_handler::maybe_restart` issues `proc_mgr.restart(&cwd)`. Save-only-on-change per ROADMAP.)*
+- [x] **[P2]** Pipe subprocess `stdout` and `stderr` streams into `tui` bottom drawer widget. *(`process_manager` spawns tasks piping lines via `mpsc` → `App.log`; `widgets/log_drawer.rs` renders footer.)*
 
 ## 6. Testing, CI & Packaging
 - [ ] **[P1]** Integration test: Test bulk model change across 20 synthetic agent files.
