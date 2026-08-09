@@ -178,8 +178,10 @@ pub fn parse_agent(content: &str) -> Result<ParsedAgent, ParseError> {
     let (raw_yaml, raw_body) = split_frontmatter(content).ok_or(ParseError::NoFrontmatter)?;
 
     let matter = Matter::<YAML>::new();
+    // gray_matter may not accept CRLF on Windows. Normalize only for parsing.
+    let normalized = content.replace("\r\n", "\n");
     let frontmatter = matter
-        .parse_with_struct::<AgentFrontmatter>(content)
+        .parse_with_struct::<AgentFrontmatter>(&normalized)
         .ok_or(ParseError::NoFrontmatter)?
         .data;
 
@@ -208,11 +210,20 @@ pub fn serialize_agent(agent: &ParsedAgent) -> String {
 /// Split `content` into (raw_yaml, body_after_closing_delimiter).
 /// The body includes the newline immediately following the closing `---`.
 fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
-    let rest = content.strip_prefix("---\n")?;
-    let end = rest.find("\n---")?;
+    // Accept both LF and CRLF — many agent .md files are authored by tools
+    // that default to CRLF on Windows.
+    let (rest, nl) = if let Some(r) = content.strip_prefix("---\r\n") {
+        (r, "\r\n")
+    } else if let Some(r) = content.strip_prefix("---\n") {
+        (r, "\n")
+    } else {
+        return None;
+    };
+    let close_marker = format!("{nl}---");
+    let end = rest.find(&close_marker)?;
     let raw_yaml = &rest[..end]; // YAML without trailing newline
-    let body = &rest[end + 4..]; // skip "\n---", keep remainder verbatim
-                                 // body starts with the newline that followed the closing delimiter (if any)
+    let close_len = close_marker.len();
+    let body = &rest[end + close_len..]; // skip the closing "\n---"
     Some((raw_yaml, body))
 }
 
@@ -269,6 +280,18 @@ code fence containing delimiter
         let expected = FIXTURE.replace("anthropic/claude-3-5-sonnet", "openai/gpt-4o");
         assert_eq!(out, expected, "mutation must touch only the value token");
         assert_eq!(parsed.frontmatter.model, "openai/gpt-4o");
+    }
+
+    #[test]
+    fn crlf_frontmatter_is_accepted_and_normalized_internally() {
+        // Reproduces the user's bug: global agents with CRLF (\r\n) were
+        // silently rejected — log showed \"no YAML frontmatter block found\"
+        // and the Subagents pane stayed empty despite files being present.
+        let crlf = "---\r\ndescription: T\r\nmode: subagent\r\nmodel: anthropic/claude-3-7\r\ntemperature: 0.1\r\n---\r\n# Body\r\nVerbatim.\r\n";
+        let parsed = parse_agent(crlf).expect("crlf parse");
+        assert_eq!(parsed.frontmatter.model, "anthropic/claude-3-7");
+        assert!(parsed.raw_body.contains("# Body"));
+        assert!(parsed.raw_yaml.contains("description: T"));
     }
 
     #[test]
