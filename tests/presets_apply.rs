@@ -73,6 +73,7 @@ fn preset_apply_to_selected_then_save_flips_only_selected() {
     assert_eq!(agents.len(), 3);
 
     let mut app = App::new(agents, tmp.path().to_path_buf());
+    app.mode = Mode::List;
     assert_eq!(
         app.presets.len(),
         2,
@@ -130,6 +131,7 @@ fn preset_capture_from_selection_then_apply_all_confirm() {
     let paths = ocoger::core::agent_scanner::scan_agents(tmp.path()).unwrap();
     let agents: Vec<_> = paths.iter().map(|p| load_agent(p).unwrap()).collect();
     let mut app = App::new(agents, tmp.path().to_path_buf());
+    app.mode = Mode::List;
     assert_eq!(app.presets.len(), 2);
 
     // Select agent b only, capture it as a preset.
@@ -179,6 +181,7 @@ fn cancel_in_apply_all_confirm_is_a_noop() {
     let paths = ocoger::core::agent_scanner::scan_agents(tmp.path()).unwrap();
     let agents: Vec<_> = paths.iter().map(|p| load_agent(p).unwrap()).collect();
     let mut app = App::new(agents, tmp.path().to_path_buf());
+    app.mode = Mode::List;
 
     app.agents[0].is_selected = true;
     app.update(Action::OpenPresets);
@@ -198,6 +201,7 @@ fn delete_preset_from_modal_persists_to_disk() {
     let paths = ocoger::core::agent_scanner::scan_agents(tmp.path()).unwrap();
     let agents: Vec<_> = paths.iter().map(|p| load_agent(p).unwrap()).collect();
     let mut app = App::new(agents, tmp.path().to_path_buf());
+    app.mode = Mode::List;
     assert_eq!(app.presets.len(), 2);
 
     app.update(Action::OpenPresets);

@@ -12,6 +12,9 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
+    /// Phase 5 hub: boot menu dispatching into pane modes. `List` stays as
+    /// the Subagents pane (enum kept to avoid churn across call sites).
+    MainMenu,
     List,
     /// Batch model input modal (PRD FE-1.3). Value staged in `modal_input`.
     ModelEdit,
@@ -127,6 +130,12 @@ pub enum Action {
     RefetchModels,
     /// Tab in Picker/Preset: toggle Input <-> List focus.
     ToggleModalFocus,
+    /// Enter on MainMenu row: open that pane.
+    MainMenuSelect,
+    /// Digit key on MainMenu: set cursor + open.
+    MainMenuJump(usize),
+    /// Esc on a leaf pane: return to MainMenu.
+    BackToMenu,
     Quit,
     Noop,
 }
@@ -172,6 +181,8 @@ pub struct App {
     pub diff_text: Option<String>,
     /// Vertical scroll offset for the diff modal (0 = top).
     pub diff_scroll: u16,
+    /// Highlighted row in the Main Menu.
+    pub mainmenu_cursor: usize,
     /// Phase 4 presets: in-memory list from `.ocoger/presets.jsonc`.
     pub presets: Vec<Preset>,
     /// Live filter of `presets` (recomputed on `PresetInput`).
@@ -194,6 +205,17 @@ pub struct App {
     /// Set by `Save` handling; `true` iff the last save wrote ≥1 file.
     last_save_wrote: bool,
 }
+
+/// Phase 5 hub items. Index ↔ `mainmenu_cursor`. Binary digit keys (1..6)
+/// jump directly. Implemented panes dispatch; unimplemented ones log a stub.
+pub const MAINMENU_ITEMS: &[(&str, &str)] = &[
+    ("Subagents", "edit .opencode/agents/*.md — models, params, presets"),
+    ("Providers & Models", "(soon) provider.baseURL / apiKey / headers"),
+    ("Permissions", "(soon) permission.<tool>: ask/allow/deny + globs"),
+    ("MCP Servers", "(soon) mcp.<name>: enable/edit local|remote"),
+    ("Commands", "(soon) .opencode/commands/*.md snippets"),
+    ("Process & Logs", "(soon) supervised opencode status + tail pane"),
+];
 
 impl App {
     pub fn new(agents: Vec<AgentFile>, project_root: PathBuf) -> Self {
@@ -219,7 +241,7 @@ impl App {
             cursor: 0,
             should_quit: false,
             project_root,
-            mode: Mode::List,
+            mode: Mode::MainMenu,
             modal_input: String::new(),
             modal_focus: ModalFocus::Input,
             fetch_pending: 0,
@@ -240,6 +262,7 @@ impl App {
             fetch_logged: false,
             diff_text: None,
             diff_scroll: 0,
+            mainmenu_cursor: 0,
             presets: Vec::new(),
             preset_items: Vec::new(),
             preset_cursor: 0,
@@ -424,6 +447,14 @@ impl App {
         use Action::*;
         match action {
             MoveDown | MoveUp => match self.mode {
+                Mode::MainMenu => {
+                    let n = MAINMENU_ITEMS.len();
+                    self.mainmenu_cursor = if matches!(action, MoveDown) {
+                        (self.mainmenu_cursor + 1) % n
+                    } else {
+                        (self.mainmenu_cursor + n - 1) % n
+                    };
+                }
                 Mode::List => self.move_cursor(matches!(action, MoveDown)),
                 Mode::Form => {
                     let n = self.form_item_count();
@@ -808,6 +839,18 @@ impl App {
                     };
                 }
             }
+            MainMenuSelect => self.mainmenu_apply(),
+            MainMenuJump(i) => {
+                if self.mode == Mode::MainMenu && i < MAINMENU_ITEMS.len() {
+                    self.mainmenu_cursor = i;
+                    self.mainmenu_apply();
+                }
+            }
+            BackToMenu => {
+                if self.mode != Mode::MainMenu {
+                    self.mode = Mode::MainMenu;
+                }
+            }
             Quit => {
                 // Guard against data loss (BRD: don't destroy unsaved edits).
                 if self.dirty_count() == 0 {
@@ -823,8 +866,29 @@ impl App {
         }
     }
 
-    pub fn form_item_count(&self) -> usize {
-        match self.form_band {
+    /// Test helper: override boot mode without going through MainMenu.
+    #[cfg(test)]
+    pub fn with_mode(mut self, m: Mode) -> Self {
+        self.mode = m;
+        self
+    }
+
+    /// MainMenu Enter/digit: dispatch into the highlighted pane (stub-log until
+    /// the pane ships — learner: only arm 0 (Subagents) is implemented in 5.1).
+    fn mainmenu_apply(&mut self) {
+        if self.mode != Mode::MainMenu {
+            return;
+        }
+        match self.mainmenu_cursor {
+            0 => self.mode = Mode::List,
+            i => {
+                let name = MAINMENU_ITEMS.get(i).map(|(n, _)| *n).unwrap_or("?");
+                self.log(format!("'{name}' pane not implemented yet (Phase 5)"));
+            }
+        }
+    }
+
+    pub fn form_item_count(&self) -> usize {        match self.form_band {
             Panel::AgentParams => 5, // model, temperature, top_k, top_p, reasoning_effort
             Panel::GlobalConfig => self.config_items.len(),
         }
@@ -1178,7 +1242,30 @@ mod tests {
     }
 
     fn app3() -> App {
-        App::new(vec![agent("a"), agent("b"), agent("c")], PathBuf::from("."))
+        let mut a = App::new(vec![agent("a"), agent("b"), agent("c")], PathBuf::from("."));
+        a.mode = Mode::List; // fixtures drive pane logic directly
+        a
+    }
+
+    #[test]
+    fn mainmenu_boot_dispatches_and_back_returns() {
+        let mut app = App::new(vec![agent("a")], PathBuf::from("."));
+        assert_eq!(app.mode, Mode::MainMenu, "boot mode is the hub");
+        // Digit 1 = Subagents.
+        app.update(Action::MainMenuJump(0));
+        assert_eq!(app.mode, Mode::List);
+        // Esc in a leaf pane returns to the hub.
+        app.update(Action::BackToMenu);
+        assert_eq!(app.mode, Mode::MainMenu);
+        // j/k move the menu cursor with wrap.
+        app.update(Action::MoveDown);
+        assert_eq!(app.mainmenu_cursor, 1);
+        app.update(Action::MoveUp);
+        assert_eq!(app.mainmenu_cursor, 0);
+        // Unimplemented pane logs a stub and stays on the menu.
+        app.update(Action::MainMenuJump(2));
+        assert_eq!(app.mode, Mode::MainMenu);
+        assert!(app.log.iter().any(|m| m.contains("not implemented")));
     }
 
     #[test]
@@ -1266,6 +1353,7 @@ mod tests {
             crate::core::agent_parser::load_agent(&p).unwrap()
         };
         let mut app = App::new(vec![mk("a", "m1"), mk("b", "m2")], dir.clone());
+        app.mode = Mode::List;
         app.agents[0].is_selected = true;
         app.update(Action::OpenModelModal);
         for c in "openai/gpt-9".chars() {
@@ -1294,6 +1382,7 @@ mod tests {
         let path = dir.join("a.md");
         std::fs::write(&path, "---\nmodel: original\n---\nbody\n").unwrap();
         let mut app = App::new(vec![crate::core::agent_parser::load_agent(&path).unwrap()], dir);
+        app.mode = Mode::List;
         app.agents[0].is_selected = true;
         app.update(Action::OpenModelModal);
         for c in "tampered".chars() {
@@ -1347,6 +1436,7 @@ mod tests {
     #[test]
     fn picker_filter_narrows_then_accept_applies_to_selected() {
         let mut app = App::new(vec![agent("a")], PathBuf::from("."));
+        app.mode = Mode::List;
         app.agents[0].is_selected = true;
         app.update(Action::OpenPicker);
         assert_eq!(app.mode, Mode::Picker);

@@ -99,10 +99,26 @@ impl Keymap {
         };
         let mut m: HashMap<Mode, HashMap<KeySpec, Action>> = HashMap::new();
 
-        // ----- List / global -----
+        // ----- Main menu (Phase 5 hub) -----
         let mut t = HashMap::new();
         t.insert(def(Char('q'), false, false, false), Action::Quit);
         t.insert(def(Esc, false, false, false), Action::Quit);
+        t.insert(def(Char('j'), false, false, false), Action::MoveDown);
+        t.insert(def(Down, false, false, false), Action::MoveDown);
+        t.insert(def(Char('k'), false, false, false), Action::MoveUp);
+        t.insert(def(Up, false, false, false), Action::MoveUp);
+        t.insert(def(Enter, false, false, false), Action::MainMenuSelect);
+        // Digit shortcuts 1..=6 jump directly to a pane.
+        for (i, ch) in ('1'..='6').enumerate() {
+            t.insert(def(Char(ch), false, false, false), Action::MainMenuJump(i));
+        }
+        m.insert(Mode::MainMenu, t);
+
+        // ----- List / global -----
+        let mut t = HashMap::new();
+        t.insert(def(Char('q'), false, false, false), Action::Quit);
+        // Esc backs out to the Main Menu rather than quitting (hub pattern).
+        t.insert(def(Esc, false, false, false), Action::BackToMenu);
         t.insert(def(Char('s'), false, false, false), Action::Save);
         t.insert(def(Char('r'), false, false, false), Action::Restart);
         t.insert(def(Char('R'), false, true, false), Action::RefetchModels);
@@ -290,7 +306,8 @@ impl Keymap {
 /// Accept natural-language mode names from TOML.
 fn parse_mode(s: &str) -> Option<Mode> {
     match s {
-        "list" => Some(Mode::List),
+        "main_menu" | "mainmenu" | "menu" => Some(Mode::MainMenu),
+        "list" | "subagents" | "agents" => Some(Mode::List),
         "model_edit" | "modeledit" => Some(Mode::ModelEdit),
         "form" => Some(Mode::Form),
         "picker" => Some(Mode::Picker),
@@ -411,7 +428,12 @@ fn parse_key(s: &str) -> Option<KeySpec> {
 fn parse_action_in_mode(mode: Mode, name: &str) -> Option<Action> {
     use Mode::*;
     match (mode, name) {
+        (MainMenu, "quit") => Some(Action::Quit),
+        (MainMenu, "move_down") => Some(Action::MoveDown),
+        (MainMenu, "move_up") => Some(Action::MoveUp),
+        (MainMenu, "select") | (MainMenu, "open") => Some(Action::MainMenuSelect),
         (List, "quit") => Some(Action::Quit),
+        (List, "back") | (List, "menu") => Some(Action::BackToMenu),
         (List, "save") => Some(Action::Save),
         (List, "restart") => Some(Action::Restart),
         (List, "refetch_models") => Some(Action::RefetchModels),

@@ -17,7 +17,7 @@
 
 Rationale: the app today manages *subagent frontmatter only*, but the name is "OpenCode Manager". Phase 5 promotes the shell to a hub that covers the full `opencode.json(c)` + `.opencode/` surface as documented at opencode.ai (config, agents, providers, permissions, MCP, commands, process). `MainMenu` mode becomes the entry point; the current agent list UI is preserved unchanged as one leaf pane.
 
-* [ ] **5.1 Main Menu shell.** New `Mode::MainMenu` rendered as a numbered list; `Enter` dispatches into existing modules, `Esc` returns. Current List mode becomes the Subagents pane. Done when `ocoger` boots into MainMenu and every item navigates to at least a stub.
+* [x] **5.1 Main Menu shell.** `Mode::MainMenu` boot mode; `j/k` + digits 1-6 + Enter dispatch; `Esc` in a leaf pane returns. Current `List` kept as Subagents pane (enum name unchanged to avoid churn). Unimplemented panes log a stub.
 * [ ] **5.2 Commands pane.** `.opencode/commands/*.md` — same markdown+frontmatter shape as agents. Reuses `agent_parser`/`agent_scanner` with a different root + label; list/create/edit model & description, delete.
 * [ ] **5.3 MCP servers pane.** Reads `mcp.*` from merged JSONC; Space toggles `enabled: bool` via CST; `e` opens edit form (type local|remote, command/url, env, headers); `n` adds a new entry.
 * [ ] **5.4 Permissions pane.** Reads `permission.*` (global) and `agent.<name>.permission.*` (per-agent). Cycles `ask`/`allow`/`deny` on focus; `e` edits glob pattern tables (e.g., `bash` rules with `git *`/`npm *` last-match-wins semantics preserved by CST append order).

@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::services::process_manager::ProcessManager;
 use crate::ui::app::{Action, App, Mode};
-use crate::ui::widgets::{agent_list, diff_view, form, picker, preset_picker};
+use crate::ui::widgets::{agent_list, diff_view, form, mainmenu, picker, preset_picker};
 
 /// Run the TUI until the user quits. Restores the terminal on all exits.
 pub async fn run(mut app: App) -> io::Result<()> {
@@ -78,6 +78,7 @@ async fn event_loop(
                 s => format!("{:?}", s),
             };
             let mode_style = match app.mode {
+                Mode::MainMenu => Style::default().fg(app.theme.accent),
                 Mode::List => Style::default().fg(app.theme.accent),
                 Mode::ModelEdit => Style::default().fg(app.theme.syntax_keyword),
                 Mode::Form => Style::default().fg(app.theme.accent),
@@ -121,6 +122,7 @@ async fn event_loop(
             f.render_widget(ratatui::widgets::Paragraph::new(header), chunks[0]);
 
             match app.mode {
+                Mode::MainMenu => mainmenu::render(f, chunks[1], app),
                 Mode::List | Mode::ModelEdit => {
                     agent_list::render(f, chunks[1], app);
                     if app.mode == Mode::ModelEdit {
@@ -529,7 +531,7 @@ mod tests {
             raw_yaml: "model: m".into(),
             origin: crate::core::agent_parser::AgentOrigin::Project,
         };
-        App::new(vec![a], PathBuf::from("."))
+        App::new(vec![a], PathBuf::from(".")).with_mode(Mode::List)
     }
 
     #[test]
