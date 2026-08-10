@@ -6,10 +6,33 @@
 ## Roadmap Timeline Overview
 
 ```text
-[ Phase 1: MVP Core ] --------> [ Phase 2: Provider Integration ] --------> [ Phase 3: Process Supervisor ] --------> [ Phase 4: Enterprise & Presets ]
-(Weeks 1-2) ✓ COMPLETE          (Weeks 3-4) ✓ COMPLETE                      (Weeks 5-6) ✓ COMPLETE                    (Weeks 7-8) IN PROGRESS
+[ Phase 1: MVP Core ] --------> [ Phase 2: Provider Integration ] --------> [ Phase 3: Process Supervisor ] --------> [ Phase 4: Enterprise & Presets ] ---> [ Phase 5: Full Manager Surfaces ]
+(Weeks 1-2) ✓ COMPLETE          (Weeks 3-4) ✓ COMPLETE                      (Weeks 5-6) ✓ COMPLETE                    (Weeks 7-8) ✓ COMPLETE             (Weeks 9-12) IN PROGRESS
 
 ```
+
+---
+
+## Phase 5: Full Manager Surfaces (Target: Weeks 9–12) — IN PROGRESS
+
+Rationale: the app today manages *subagent frontmatter only*, but the name is "OpenCode Manager". Phase 5 promotes the shell to a hub that covers the full `opencode.json(c)` + `.opencode/` surface as documented at opencode.ai (config, agents, providers, permissions, MCP, commands, process). `MainMenu` mode becomes the entry point; the current agent list UI is preserved unchanged as one leaf pane.
+
+* [ ] **5.1 Main Menu shell.** New `Mode::MainMenu` rendered as a numbered list; `Enter` dispatches into existing modules, `Esc` returns. Current List mode becomes the Subagents pane. Done when `ocoger` boots into MainMenu and every item navigates to at least a stub.
+* [ ] **5.2 Commands pane.** `.opencode/commands/*.md` — same markdown+frontmatter shape as agents. Reuses `agent_parser`/`agent_scanner` with a different root + label; list/create/edit model & description, delete.
+* [ ] **5.3 MCP servers pane.** Reads `mcp.*` from merged JSONC; Space toggles `enabled: bool` via CST; `e` opens edit form (type local|remote, command/url, env, headers); `n` adds a new entry.
+* [ ] **5.4 Permissions pane.** Reads `permission.*` (global) and `agent.<name>.permission.*` (per-agent). Cycles `ask`/`allow`/`deny` on focus; `e` edits glob pattern tables (e.g., `bash` rules with `git *`/`npm *` last-match-wins semantics preserved by CST append order).
+* [ ] **5.5 Providers & Models pane.** Per-`provider.<id>`: `options.baseURL`, `options.apiKey` (kept as `{env:VAR}` placeholder), `options.headers`, `models` table, `blacklist`/`whitelist`. Expose model `limit.context`/`limit.output`.
+* [ ] **5.6 Process & Logs pane.** Promote `ProcessManager` from footer to full pane: state, pid, uptime, tail `[stdout]`/`[stderr]` with scroll, `R` restart, `K` kill, `S` start, `opencode serve` port config.
+* [ ] **5.7 Settings/Theme pane.** `theme` picker (7 built-in + custom TOMLs), `default_agent`, `autoupdate`, `share` fields.
+
+---
+
+## Deferred (not Phase 5)
+
+* Sessions/snapshots pane (opencode `snapshots` field is UI-internal; out of scope)
+* LSP server configuration widgets (rarely touched; JSONC path suffices)
+* Plugins pane (`plugin: []` array — trivial CST edit but a low-value standalone pane)
+
 
 ---
 
@@ -41,21 +64,19 @@
 * [x] **Hot-Restart Automation:** `Ctrl+S` hotkey runs `save_and_check_restart()` — writes dirty agents via atomic write, then issues `proc_mgr.restart()` only when files actually changed (save-only-on-change logic).
 * [x] **Live Terminal Output Drawer:** stdout/stderr piped via `tokio::process` pipes; lines read in tasks (`mpsc`) then appended to App `log` via each tick drain — visible in the footer `[stdout]`/`[stderr]`.
 
-### Phase 4: Presets, Profiles & Polish (Target: Week 8) — IN PROGRESS
+### Phase 4: Presets, Profiles & Polish (Target: Week 8) — ✓ COMPLETE (2026-08-10)
 
-* [ ] **Configuration Presets:** Save/Load profile snapshots (e.g., "Deep Work / Reasoning Mode", "Fast Draft / Cheap Mode").
-* [x] **Diff Previewer Modal:** unified pre-save diff preview via `Mode::Diff`; staged edits write to `.ocoger/staging/…` (atomic), diff computed per changed agent via `similar` text diff; D key on Any mode (List/Model/Form/Picker all) for review before application. Handles dirty tracking and per-file memoization.
-* [ ] **Custom Hotkey Rebinding:** Configurable keybindings file (`tui_keymaps.toml`).
-* [ ] **Binary Packaging:** Release pipeline for GitHub Actions producing prebuilt binaries for Linux, macOS, and Windows.
+* [x] **Configuration Presets:** `.ocoger/presets.jsonc` — capture from selection (`n`), apply to selected (`Enter`), apply-to-all with confirm (`Shift+A` → y/n), delete (`d`), live filter (focus-locked).
+* [x] **Diff Previewer Modal:** unified pre-save diff via `Mode::Diff`; multi-file concatenation + `j/k`/wheel scroll.
+* [x] **Custom Hotkey Rebinding:** `~/.config/ocoger/keymaps.toml` (XDG) → `<project>/.ocoger/tui_keymaps.toml`, per-(mode, action) merge with conflict warnings.
+* [x] **Binary Packaging:** GitHub Actions release matrix across 8 targets (win x64/arm64, linux gnu/musl x64/arm64 incl. Alpine/Termux, macOS x64/arm64); musl static + cross-built intel-mac on arm64 runner.
+* [x] **First-class input UX fixes:** Space/Enter select, Shift+P, single-save logging, click-to-toggle mouse, focus-locked picker filter (Tab to switch Input↔List), fetch-pending badge, `R` re-fetch, discard-staged (`x`).
+* [x] **One-line installers:** `install.sh` (POSIX) + `install.ps1` (Windows), detecting OS/arch and deploying to user-local bin with PATH bootstrap.
 
 ---
 
-## Session Notes (2026-08-08)
+## Session Notes (2026-08-10)
 
-Phase 1+2+3 MVP features are functional and test-covered (28 simple integration-ish unit tests in `core::`-pedagogy: parser, scanner; jsonc config; file utilities; `ui::App` model with `dirty`, last message state; services process manager). The TUI supports:
+Phase 4 marked complete. Phase 5 scoped in: promote the shell to a hub covering the full opencode config surface, starting from a new `Mode::MainMenu`. Current agent list UI is retained as the Subagents leaf pane, unchanged.
 
-* batch/hot-edit (`m`, `+`, `-`, `e`, `g`)
-* process supervision (`Ctrl+S` → restart → timestamps queued via `model_fetcher` → picker p) 
-* diff review before applying (`D`) — only works on the path you want.
-
-**Future priorities:** JSON presets, keybinding rebinding (toml), Windows service tray/config for packaged releases (?), release tags; error log with colored severity (P2), hot-load project on `Ctrl+R`.
+**Near-term priorities:** 5.1 MainMenu scaffolding (one new mode + dispatch), then 5.2 Commands pane (near-free reuse of `agent_parser`/`agent_scanner`), then 5.3 MCP toggle via CST as the first non-agent module proving `jsonc_config` generalizes.

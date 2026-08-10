@@ -50,5 +50,16 @@
 
 ## 6. Testing, CI & Packaging
 - [ ] **[P1]** Integration test: Test bulk model change across 20 synthetic agent files.
-- [ ] **[P2]** Setup GitHub Actions workflow for automated `cargo test` and cross-compilation builds.
+- [x] **[P2]** Setup GitHub Actions workflow for automated `cargo test` and cross-compilation builds. *(release.yml; 8-target matrix incl. musl, aarch64, intel-mac cross; per-leg smoke test gating; single-leg release-notes gen; archives written into `dist/` and uploaded per-target)*
+- [x] **[P3]** One-line installers: `install.sh` (POSIX, musl-aware) and `install.ps1` (Windows, PATH bootstrap) resolving latest GitHub release.
 - [ ] **[P3]** Write shell completion scripts (`bash`, `zsh`, `fish`).
+- [ ] **[P3]** Generate `.sha256` checksums in CI + verify in installers.
+
+## 7. Phase 5 — Full Manager Surfaces (see ROADMAP.md Phase 5)
+- [ ] **[P1]** New `Mode::MainMenu` as boot mode; `1..6`/`j/k`/`Enter` select pane, `Esc` back. Current `Mode::List` renamed to Subagents surface *in routing only* (keep enum to avoid churn). Main menu items: Subagents, Providers & Models, Permissions, MCP Servers, Commands, Process & Logs, Settings/Theme.
+- [ ] **[P1]** Commands pane (`.opencode/commands/*.md`): generalize `agent_scanner`/`agent_parser` with root + suffix params; list, edit model/description, create, delete.
+- [ ] **[P1]** MCP servers pane: read `mcp.*` map; Space toggles `enabled` via CST set; `n` add (type local/remote → prompt command/url + env/headers); `e` edit field; `d` delete.
+- [ ] **[P2]** Permissions pane: cycle ask/allow/deny on `permission.<tool>`; per-agent overrides under `agent.<name>.permission.*`; glob-rule tables for `bash`/`edit` (append-order = match precedence).
+- [ ] **[P2]** Providers pane: `provider.<id>` options.baseURL / options.apiKey (`{env:VAR}` refs preserved as strings) / headers / models limits; blacklist/whitelist editors.
+- [ ] **[P2]** Process & Logs pane: promote `services::process_manager` to full pane with scrollable `[stdout]`/`[stderr]` tail; `S` start, `K` kill, `R` restart.
+- [ ] **[P3]** Settings/Theme pane: theme picker (7 built-ins + `~/.config/ocoger/themes/*.toml` customs), `default_agent`, `autoupdate`, `share`.

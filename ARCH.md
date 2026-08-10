@@ -136,7 +136,31 @@
 5. **Hot-reload consistency:** diff preview should **probably be cached per agent file** to avoid re-reading the `.ocoger/staging/*` on every rendered frame (currently recomputed on every open when mismatches are detected).
 6. **Anti-regression:** the number of tests in the tree grew to 28; more integration tests live at `core::fs_util::tests::create_and_rename_tmp_file` + `ui::app::tests::save_writes_selected_files_and_clears_dirty` (full cycle) — commit already contains these.
 
-## 7. Reference: Tail log section example
+## 7. Phase 5 — Hub-and-Spoke Architecture
+
+The current shell is a single-surface app (Subagents list). Phase 5 promotes it to a hub-and-spoke TUI (lazygit-style): a new `Mode::MainMenu` boots by default and dispatches into pane-local `Mode`s. Existing `Mode`s remain unchanged; they are reused as leaf panes.
+
+```text
+         ┌──────────────────────────┐
+         │  Mode::MainMenu (boot)   │  ← new; list + Enter/Esc
+         └────────────┬─────────────┘
+        ┌─────────────┼─────────────┬──────────────┬──────────────┬─────────────┐
+        ▼             ▼             ▼              ▼              ▼             ▼
+   Subagents    Providers &    Permissions    MCP Servers    Commands      Process &
+   (current     Models         (5.4)          (5.3)          (5.2)         Logs (5.6)
+    List mode)  (5.5)
+```
+
+Design rules (kept invariant across panes):
+
+* One `Mode` enum; `handle_key` dispatches via `app.mode`. New pane = new variant + widget under `src/ui/widgets/<pane>.rs`.
+* `ModalFocus` Input↔List (Tab-toggle) applies wherever a modal has *both* a filter box and a bound action set. Panes with only one side do not need it.
+* CST-surgical config edits go through `JsoncConfig::{set_nested_str,set_value,append}` — never serde round-trip. New panes add dedicated helpers in `core/jsonc_config.rs` rather than ad-hoc string splicing.
+* New keybinds live in `core::keymap::defaults()` under the pane's `Mode` and are user-overridable via `keymaps.toml` (same precedence chain).
+* Process supervision is global state owned by `App` (via `ProcessManager`), surfaced by footer in every pane and by the dedicated Process & Logs pane.
+* Multi-pane dirty tracking stays single-pass: `is_dirty` counts / `dirty_count()` union across modules as they appear — restart semantics continue to trigger from any dirty write.
+
+## 8. Reference: Tail log section example
 
 ```text
  ocoger :: 3 agent(s) | 2 selected | 0 unsaved | mode: List | running...
