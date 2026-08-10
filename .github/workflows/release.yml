@@ -93,10 +93,12 @@ jobs:
           cp "$SRC" "$DEST/"
           cp README.md "$DEST/"
           cd dist
+          # Write the archive INSIDE dist/ so the upload glob under dist/
+          # finds it. `../` placed it at repo root where the glob missed.
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            7z a "../$PKG_NAME.zip" "$PKG_NAME"
+            7z a "$PKG_NAME.zip" "$PKG_NAME" >/dev/null
           else
-            tar czf "../$PKG_NAME.tar.gz" "$PKG_NAME"
+            tar czf "$PKG_NAME.tar.gz" "$PKG_NAME"
           fi
           cd ..
           ls dist/
@@ -108,6 +110,4 @@ jobs:
           # or the release body ends up with N duplicate "Full Changelog"
           # lines. Pick a deterministic leg (windows x64) to own notes.
           generate_release_notes: ${{ matrix.target == 'x86_64-pc-windows-msvc' }}
-          files: |
-            dist/ocoger-${{ github.ref_name }}-${{ matrix.target }}.zip
-            dist/ocoger-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          files: dist/ocoger-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive == 'zip' && 'zip' || 'tar.gz' }}
