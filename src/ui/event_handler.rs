@@ -251,6 +251,17 @@ async fn event_loop(
             match event::read()? {
                 Event::Key(key) => {
                     tracing::debug!(?key, mode = ?app.mode, "key event");
+                    // Hard escape hatch: Ctrl+C exits regardless of mode or
+                    // keymap state, so a bad table can never trap the user.
+                    if key.kind == KeyEventKind::Press
+                        && key.code == KeyCode::Char('c')
+                        && key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                    {
+                        tracing::debug!("ctrl+c hard exit");
+                        return Ok(());
+                    }
                     if let Some(action) = dispatch_key_if_press(app, key) {
                         tracing::debug!(?action, mode = ?app.mode, "action dispatched");
                         maybe_restart(proc_mgr, app, action).await;
