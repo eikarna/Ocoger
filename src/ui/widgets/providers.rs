@@ -62,7 +62,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     frame.render_stateful_widget(List::new(items), chunks[1], &mut state);
 
     // Footer with key hints.
-    let hint = "[j/k] nav  [e] edit provider  [d] delete";
+    let hint = "[j/k] nav  [e] baseURL  [a] apiKey  [d] delete  [Esc] back";
     // Header line: count + dirty flag, then key hints.
     let mut spans = header.spans;
     spans.push(Span::styled(

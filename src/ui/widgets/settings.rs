@@ -53,7 +53,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     state.select(Some(app.settings_cursor));
     frame.render_stateful_widget(List::new(items), chunks[1], &mut state);
 
-    let hint = "[Space] toggle bool/cycle  [e] edit string  [Esc] back";
+    let hint = "[j/k] nav  [Space] toggle  [e/Enter] edit  [Esc] back";
     let header = Line::from(vec![
         Span::styled(
             format!(" {:3} ", app.settings_rows.len()),

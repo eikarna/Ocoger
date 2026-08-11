@@ -253,6 +253,7 @@ impl Keymap {
             Mode::Permissions,
             Mode::Mcp,
             Mode::Process,
+            Mode::Settings,
         ] {
             let mut t = HashMap::new();
             t.insert(def(Esc, false, false, false), Action::BackToMenu);
@@ -281,7 +282,7 @@ impl Keymap {
                         Action::ProviderEditStart("options.baseURL"),
                     );
                     t.insert(
-                        def(Char('k'), false, false, false),
+                        def(Char('a'), false, false, false),
                         Action::ProviderEditStart("options.apiKey"),
                     );
                     t.insert(def(Char('d'), false, false, false), Action::ProviderDelete);
@@ -625,6 +626,44 @@ mod tests {
             alt: false,
         };
         assert_eq!(km.lookup(Mode::List, big_p), Some(Action::OpenPresets));
+    }
+
+    /// Every Phase 5 leaf pane must be reachable *and* escapable. A missing
+    /// mode in the leaf loop is invisible at compile time and looks like a
+    /// total input freeze at runtime (this regressed for Mode::Settings).
+    #[test]
+    fn every_leaf_pane_binds_escape_and_navigation() {
+        let km = Keymap::defaults();
+        let key = |c: KeyCodeShape| KeySpec {
+            code: c,
+            ctrl: false,
+            shift: false,
+            alt: false,
+        };
+        for mode in [
+            Mode::Commands,
+            Mode::Providers,
+            Mode::Permissions,
+            Mode::Mcp,
+            Mode::Process,
+            Mode::Settings,
+        ] {
+            assert_eq!(
+                km.lookup(mode, key(KeyCodeShape::Esc)),
+                Some(Action::BackToMenu),
+                "{mode:?} has no Esc binding — users get trapped in the pane"
+            );
+            assert_eq!(
+                km.lookup(mode, key(KeyCodeShape::Char('j'))),
+                Some(Action::MoveDown),
+                "{mode:?} has no j binding"
+            );
+            assert_eq!(
+                km.lookup(mode, key(KeyCodeShape::Char('k'))),
+                Some(Action::MoveUp),
+                "{mode:?} 'k' must stay MoveUp; pane-specific actions use other keys"
+            );
+        }
     }
 
     #[test]
