@@ -179,4 +179,4 @@ Process state is echoed immediately into the header of every render tick.
 
 ---
 
-*This document reflects the code as validated by `cargo test/clippy/fmt` (28 tests, zero warnings) and spike run in `examples/proc_spike.rs` for Windows process semantics. See ROADMAP.md for Phase status.*
+*This document reflects the code as validated by `cargo test/clippy/fmt` (79 tests) and spike run in `examples/proc_spike.rs` for Windows process semantics. See ROADMAP.md for Phase status.*

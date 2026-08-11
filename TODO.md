@@ -56,10 +56,10 @@
 - [ ] **[P3]** Generate `.sha256` checksums in CI + verify in installers.
 
 ## 7. Phase 5 — Full Manager Surfaces (see ROADMAP.md Phase 5)
-- [ ] **[P1]** New `Mode::MainMenu` as boot mode; `1..6`/`j/k`/`Enter` select pane, `Esc` back. Current `Mode::List` renamed to Subagents surface *in routing only* (keep enum to avoid churn). Main menu items: Subagents, Providers & Models, Permissions, MCP Servers, Commands, Process & Logs, Settings/Theme.
-- [ ] **[P1]** Commands pane (`.opencode/commands/*.md`): generalize `agent_scanner`/`agent_parser` with root + suffix params; list, edit model/description, create, delete.
-- [ ] **[P1]** MCP servers pane: read `mcp.*` map; Space toggles `enabled` via CST set; `n` add (type local/remote → prompt command/url + env/headers); `e` edit field; `d` delete.
-- [ ] **[P2]** Permissions pane: cycle ask/allow/deny on `permission.<tool>`; per-agent overrides under `agent.<name>.permission.*`; glob-rule tables for `bash`/`edit` (append-order = match precedence).
-- [ ] **[P2]** Providers pane: `provider.<id>` options.baseURL / options.apiKey (`{env:VAR}` refs preserved as strings) / headers / models limits; blacklist/whitelist editors.
-- [ ] **[P2]** Process & Logs pane: promote `services::process_manager` to full pane with scrollable `[stdout]`/`[stderr]` tail; `S` start, `K` kill, `R` restart.
-- [ ] **[P3]** Settings/Theme pane: theme picker (7 built-ins + `~/.config/ocoger/themes/*.toml` customs), `default_agent`, `autoupdate`, `share`.
+- [x] **[P1]** New `Mode::MainMenu` as boot mode; `1..6`/`j/k`/`Enter` select pane, `Esc` back. Current `Mode::List` renamed to Subagents surface *in routing only* (keep enum to avoid churn). Main menu items: Subagents, Providers & Models, Permissions, MCP Servers, Commands, Process & Logs, Settings/Theme.
+- [x] **[P1]** Commands pane (`.opencode/commands/*.md`): list + nav wired (5.2 read-only shipped; create/edit/delete via modal + CST deferred).
+- [ ] **[P1]** MCP servers pane: read `mcp.*` map; Space toggles enabled; `n` add / `e` edit / `d` delete.
+- [ ] **[P2]** Permissions pane: cycle ask/allow/deny on `permission.<tool>`; per-agent overrides; glob tables.
+- [~] **[P2]** Providers pane: list + nav wired (read-only shipped 5.5 partial). Remaining: baseURL/apiKey/headers edit via CST, blacklist/whitelist, models limits.
+- [ ] **[P2]** Process & Logs pane: pane with scrollable `[stdout]`/`[stderr]` tail; S start/K kill/R restart.
+- [ ] **[P3]** Settings/Theme pane: theme picker (7 built-ins + custom TOMLs), `default_agent`, `autoupdate`, `share`.

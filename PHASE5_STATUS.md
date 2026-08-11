@@ -80,7 +80,9 @@ Build / Verification (2026-08-11)
 - `cargo fmt` applied.
 
 Doc-drift notes:
-- ARCH.md/TODO.md cite "28 tests" — stale; current is 78.
+- ARCH.md (previously "28 tests, zero warnings") corrected to 79.
 - "Save/restart semantics only cover the Subagents pane" still true.
 - `core/test_support.rs` was added by 5abbd57 but its `pub(crate) mod`
   declaration was lost from `core/mod.rs` at some point; restored here.
+- `commands.rs::find_delimiters` off-by-3 (sliced `[y1+3..]`, dropping
+  the first 3 bytes of every frontmatter) fixed; real files now parse.
