@@ -42,6 +42,10 @@ pub async fn run(mut app: App) -> io::Result<()> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    // Alternate screen inherits the terminal's scrollback. Without this, the
+    // ratatui diff renderer believes the screen is already blank and skips
+    // cells no widget paints, leaving old text visible under sparse panes.
+    terminal.clear()?;
 
     let mut proc_mgr = ProcessManager::new();
     let result = event_loop(&mut app, &mut terminal, &mut proc_mgr).await;
@@ -246,7 +250,9 @@ async fn event_loop(
         if event::poll(Duration::from_millis(16))? {
             match event::read()? {
                 Event::Key(key) => {
+                    tracing::debug!(?key, mode = ?app.mode, "key event");
                     if let Some(action) = dispatch_key_if_press(app, key) {
+                        tracing::debug!(?action, mode = ?app.mode, "action dispatched");
                         maybe_restart(proc_mgr, app, action).await;
                         if app.should_quit {
                             return Ok(());

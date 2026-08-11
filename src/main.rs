@@ -18,7 +18,9 @@ fn init_logging() {
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
     // Guard intentionally leaked into a static-ish lifetime via forget so the
     // background writer lives for the process duration.
+    // Default to DEBUG so the key/action diagnostics land in the log file.
     tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
         .with_writer(non_blocking)
         .with_ansi(false)
         .init();
