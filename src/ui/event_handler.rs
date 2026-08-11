@@ -17,7 +17,8 @@ use std::time::Duration;
 use crate::services::process_manager::ProcessManager;
 use crate::ui::app::{Action, App, Mode};
 use crate::ui::widgets::{
-    agent_list, commands, diff_view, form, mainmenu, picker, preset_picker, providers,
+    agent_list, commands, diff_view, form, mainmenu, mcp, permissions, picker, preset_picker,
+    providers,
 };
 
 /// Run the TUI until the user quits. Restores the terminal on all exits.
@@ -94,7 +95,11 @@ async fn event_loop(
                 Mode::PresetNameNew => Style::default().fg(app.theme.warn),
                 Mode::PresetConfirmAll => Style::default().fg(app.theme.warn),
                 Mode::GlobalEditPrompt => Style::default().fg(app.theme.warn),
-                Mode::Commands | Mode::Providers => Style::default().fg(app.theme.accent),
+                Mode::Commands
+                | Mode::Providers
+                | Mode::Mcp
+                | Mode::Permissions
+                | Mode::Process => Style::default().fg(app.theme.accent),
             };
             let dirty_style = if app.dirty_count() > 0 {
                 Style::default()
@@ -150,6 +155,9 @@ async fn event_loop(
                 }
                 Mode::Commands => commands::render(f, chunks[1], app),
                 Mode::Providers => providers::render(f, chunks[1], app),
+                Mode::Mcp => mcp::render(f, chunks[1], app),
+                Mode::Permissions => permissions::render(f, chunks[1], app),
+                Mode::Process => mainmenu::render(f, chunks[1], app), // Phase 5.6 placeholder: reuse hub render
                 Mode::GlobalEditPrompt => {
                     form::render(f, chunks[1], app);
                     // Rendered as a simple modal paragraph on top of the form.

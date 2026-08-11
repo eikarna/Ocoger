@@ -39,6 +39,12 @@ pub enum Mode {
     Commands,
     /// Phase 5.3: Providers pane — providers from merged config (read-only list).
     Providers,
+    /// Phase 5.4: MCP servers pane — `mcp.<name>` toggles & edits.
+    Mcp,
+    /// Phase 5.5: Permissions pane — cycle ask/allow/deny (global + per-agent).
+    Permissions,
+    /// Phase 5.6: Process & Logs pane — supervised `opencode` status + tail.
+    Process,
 }
 
 /// Event-loop async actions the pure `update()` cannot perform itself (spawn/
@@ -140,6 +146,20 @@ pub enum Action {
     MainMenuJump(usize),
     /// Esc on a leaf pane: return to MainMenu.
     BackToMenu,
+    /// MCP pane: toggle `enabled` on the highlighted server.
+    McpToggle,
+    /// MCP pane: flip `type` between local/remote on the highlighted server.
+    McpToggleType,
+    /// MCP pane: delete the highlighted server.
+    McpDelete,
+    /// MCP pane: start inline edit of command/url (AgentList pattern).
+    McpEditStart,
+    /// MCP pane: commit the inline edit buffer.
+    McpEditCommit,
+    /// Permissions pane: cycle global value at cursor ask->allow->deny->ask.
+    PermCycle,
+    /// Permissions pane: cycle per-agent override value at cursor.
+    PermCycleAgent(usize),
     Quit,
     Noop,
 }
@@ -218,6 +238,12 @@ pub struct App {
     pub providers_cursor: usize,
     /// Reserved for when provider edit/delete lands (widget renders the flag).
     pub providers_is_dirty: bool,
+    /// Phase 5.4: MCP servers snapshot from merged config (`mcp.<name>` map).
+    pub mcp_list: Vec<crate::core::mcp::McpEntry>,
+    pub mcp_cursor: usize,
+    /// Phase 5.5: permission tuples — global + per-agent override values.
+    pub perm_rows: Vec<crate::core::permissions::PermRow>,
+    pub perm_cursor: usize,
 }
 
 /// Phase 5 hub items. Index ↔ `mainmenu_cursor`. Binary digit keys (1..6)
@@ -232,8 +258,15 @@ pub const MAINMENU_ITEMS: &[(&str, &str)] = &[
         "provider.baseURL / apiKey / headers + blacklist/whitelist",
     ),
     ("Permissions", "permission.<tool>: ask/allow/deny + globs"),
-    ("MCP Servers", "mcp.<name>: enable/edit local|remote"),
+    (
+        "MCP Servers",
+        "mcp.<name>: Space toggle / t type / d delete",
+    ),
     ("Commands", ".opencode/commands/*.md snippets — created!"),
+    (
+        "Process & Logs",
+        "supervised opencode status + tail (Phase 5.6 partial)",
+    ),
 ];
 
 impl App {
@@ -256,11 +289,23 @@ impl App {
             .collect();
         let (fetch_tx, fetch_rx) = tokio::sync::mpsc::unbounded_channel();
         let commands = crate::core::commands::list_commands(&project_root).unwrap_or_default();
-        let providers_list = config
-            .as_ref()
-            .and_then(|c| c.value().ok())
+        let config_value: Option<serde_json::Value> = config.as_ref().and_then(|c| c.value().ok());
+        let providers_list = config_value
+            .clone()
             .and_then(|v| crate::core::providers::ProviderInfo::scan_providers(&v).ok())
             .unwrap_or_default();
+        let mcp_list = config_value
+            .as_ref()
+            .map(|v| crate::core::mcp::McpEntry::scan(v))
+            .unwrap_or_default();
+        let agent_names: Vec<String> = agents
+            .iter()
+            .filter_map(|a| a.path.file_stem().map(|s| s.to_string_lossy().to_string()))
+            .collect();
+        let perm_rows = config_value
+            .as_ref()
+            .map(|v| crate::core::permissions::scan(v, &agent_names))
+            .unwrap_or_else(|| crate::core::permissions::scan(&serde_json::Value::Null, &[]));
         let mut app = Self {
             agents,
             cursor: 0,
@@ -303,6 +348,10 @@ impl App {
             providers_list,
             providers_cursor: 0,
             providers_is_dirty: false,
+            mcp_list,
+            mcp_cursor: 0,
+            perm_rows,
+            perm_cursor: 0,
         };
         // Best-effort: load presets on boot; errors land in the log but never
         // block the UI (a corrupt presets file shouldn't break agent editing).
@@ -478,19 +527,17 @@ impl App {
         use Action::*;
         match action {
             MoveDown | MoveUp => match self.mode {
-                Mode::MainMenu => {
-                    let n = MAINMENU_ITEMS.len();
-                    self.mainmenu_cursor = if matches!(action, MoveDown) {
-                        (self.mainmenu_cursor + 1) % n
-                    } else {
-                        (self.mainmenu_cursor + n - 1) % n
-                    };
-                }
+                Mode::MainMenu => Self::wrap(
+                    &mut self.mainmenu_cursor,
+                    MAINMENU_ITEMS.len(),
+                    matches!(action, MoveDown),
+                ),
                 Mode::List => self.move_cursor(matches!(action, MoveDown)),
                 Mode::Form => {
                     let n = self.form_item_count();
                     if n > 0 {
-                        self.form_cursor = if matches!(action, MoveDown) {
+                        let next = matches!(action, MoveDown);
+                        self.form_cursor = if next {
                             (self.form_cursor + 1) % n
                         } else {
                             (self.form_cursor + n - 1) % n
@@ -501,7 +548,8 @@ impl App {
                 Mode::Picker => {
                     let n = self.picker_items.len();
                     if n > 0 {
-                        self.picker_cursor = if matches!(action, MoveDown) {
+                        let next = matches!(action, MoveDown);
+                        self.picker_cursor = if next {
                             (self.picker_cursor + 1) % n
                         } else {
                             (self.picker_cursor + n - 1) % n
@@ -511,7 +559,8 @@ impl App {
                 Mode::Preset => {
                     let n = self.preset_items.len();
                     if n > 0 {
-                        self.preset_cursor = if matches!(action, MoveDown) {
+                        let next = matches!(action, MoveDown);
+                        self.preset_cursor = if next {
                             (self.preset_cursor + 1) % n
                         } else {
                             (self.preset_cursor + n - 1) % n
@@ -522,23 +571,28 @@ impl App {
                 Mode::Commands => {
                     let n = self.commands.len();
                     if n > 0 {
-                        self.commands_cursor = if matches!(action, MoveDown) {
-                            (self.commands_cursor + 1) % n
-                        } else {
-                            (self.commands_cursor + n - 1) % n
-                        };
+                        Self::wrap(&mut self.commands_cursor, n, matches!(action, MoveDown));
                     }
                 }
                 Mode::Providers => {
                     let n = self.providers_list.len();
                     if n > 0 {
-                        self.providers_cursor = if matches!(action, MoveDown) {
-                            (self.providers_cursor + 1) % n
-                        } else {
-                            (self.providers_cursor + n - 1) % n
-                        };
+                        Self::wrap(&mut self.providers_cursor, n, matches!(action, MoveDown));
                     }
                 }
+                Mode::Mcp => {
+                    let n = self.mcp_list.len();
+                    if n > 0 {
+                        Self::wrap(&mut self.mcp_cursor, n, matches!(action, MoveDown));
+                    }
+                }
+                Mode::Permissions => {
+                    let n = self.perm_rows.len();
+                    if n > 0 {
+                        Self::wrap(&mut self.perm_cursor, n, matches!(action, MoveDown));
+                    }
+                }
+                Mode::Process => {}
             },
             OpenForm => {
                 if self.mode == Mode::List {
@@ -902,6 +956,34 @@ impl App {
                     self.mode = Mode::MainMenu;
                 }
             }
+            McpToggle => {
+                if self.mode == Mode::Mcp {
+                    self.mcp_toggle_current();
+                }
+            }
+            McpToggleType => {
+                if self.mode == Mode::Mcp {
+                    self.mcp_toggle_type();
+                }
+            }
+            McpDelete => {
+                if self.mode == Mode::Mcp {
+                    self.mcp_delete_current();
+                }
+            }
+            McpEditStart | McpEditCommit => {
+                self.log("inline command/url edit not implemented (Phase 5 polish)".to_string());
+            }
+            PermCycle => {
+                if self.mode == Mode::Permissions {
+                    self.perm_cycle(None);
+                }
+            }
+            PermCycleAgent(agent_idx) => {
+                if self.mode == Mode::Permissions {
+                    self.perm_cycle(Some(agent_idx));
+                }
+            }
             Quit => {
                 // Guard against data loss (BRD: don't destroy unsaved edits).
                 if self.dirty_count() == 0 {
@@ -933,6 +1015,8 @@ impl App {
         match self.mainmenu_cursor {
             0 => self.mode = Mode::List,
             1 => self.mode = Mode::Providers,
+            2 => self.mode = Mode::Permissions,
+            3 => self.mode = Mode::Mcp,
             4 => self.mode = Mode::Commands,
             i => {
                 let name = MAINMENU_ITEMS.get(i).map(|(n, _)| *n).unwrap_or("?");
@@ -1101,6 +1185,130 @@ impl App {
         if self.log.len() > 5 {
             let drop_n = self.log.len() - 5;
             self.log.drain(..drop_n);
+        }
+    }
+
+    // --- Phase 5.4 (MCP) helpers ------------------------------------------------
+
+    fn mcp_toggle_current(&mut self) {
+        let Some(mut e) = self.mcp_list.get(self.mcp_cursor).cloned() else {
+            return;
+        };
+        e.enabled = !e.enabled;
+        let Some(cfg) = self.config.as_mut() else {
+            return;
+        };
+        cfg.set_nested_value(
+            ["mcp", &e.name, "enabled"],
+            jsonc_parser::cst::CstInputValue::Bool(e.enabled),
+        )
+        .ok();
+        let _ = cfg.save();
+        self.mcp_list[self.mcp_cursor].enabled = e.enabled;
+        self.log(format!(
+            "mcp '{}' {}",
+            e.name,
+            if e.enabled { "enabled" } else { "disabled" }
+        ));
+    }
+
+    fn mcp_toggle_type(&mut self) {
+        let Some(e) = self.mcp_list.get(self.mcp_cursor).cloned() else {
+            return;
+        };
+        let new_kind = if e.kind == "local" { "remote" } else { "local" };
+        let Some(cfg) = self.config.as_mut() else {
+            return;
+        };
+        if cfg
+            .set_nested_str(["mcp", &e.name, "type"], new_kind)
+            .is_ok()
+        {
+            let _ = cfg.save();
+            self.mcp_list[self.mcp_cursor].kind = new_kind.to_string();
+            self.log(format!("mcp '{}' type={}", e.name, new_kind));
+        }
+    }
+
+    fn mcp_delete_current(&mut self) {
+        let Some(e) = self.mcp_list.get(self.mcp_cursor).cloned() else {
+            return;
+        };
+        let Some(cfg) = self.config.as_mut() else {
+            return;
+        };
+        if cfg.remove_nested(["mcp", &e.name]).is_ok() {
+            let _ = cfg.save();
+            self.mcp_list.remove(self.mcp_cursor);
+            if self.mcp_cursor > 0 {
+                self.mcp_cursor -= 1;
+            }
+            self.log(format!("mcp '{}' deleted", e.name));
+        }
+    }
+
+    // --- Phase 5.5 (Permissions) helpers ----------------------------------------
+
+    fn perm_cycle(&mut self, agent_idx: Option<usize>) {
+        let Some(row) = self.perm_rows.get(self.perm_cursor).cloned() else {
+            return;
+        };
+        let (keypath, cur, label): (Vec<String>, String, String) = match agent_idx {
+            None => (
+                vec!["permission".to_string(), row.tool.clone()],
+                row.global.clone(),
+                format!("permission.{}", row.tool),
+            ),
+            Some(i) => {
+                let Some(agent_name) = row.agent_overrides.keys().nth(i).cloned() else {
+                    return;
+                };
+                let cur = row
+                    .agent_overrides
+                    .get(&agent_name)
+                    .cloned()
+                    .unwrap_or_default();
+                (
+                    vec![
+                        "agent".to_string(),
+                        agent_name.clone(),
+                        "permission".to_string(),
+                        row.tool.clone(),
+                    ],
+                    cur,
+                    format!("agent.{}.permission.{}", agent_name, row.tool),
+                )
+            }
+        };
+        let next = crate::core::permissions::next_value(&cur);
+        let Some(cfg) = self.config.as_mut() else {
+            return;
+        };
+        if cfg.set_nested_str(&keypath, next).is_ok() {
+            let _ = cfg.save();
+            self.perm_refresh();
+            self.log(format!("{label} = {next}"));
+        }
+    }
+
+    fn perm_refresh(&mut self) {
+        if let (Some(cfg), _) = (self.config.as_ref(), ()) {
+            if let Ok(v) = cfg.value() {
+                let agent_names: Vec<String> = self
+                    .agents
+                    .iter()
+                    .filter_map(|a| a.path.file_stem().map(|s| s.to_string_lossy().to_string()))
+                    .collect();
+                self.perm_rows = crate::core::permissions::scan(&v, &agent_names);
+            }
+        }
+    }
+
+    fn wrap(cur: &mut usize, n: usize, next: bool) {
+        if next {
+            *cur = (*cur + 1) % n;
+        } else {
+            *cur = (*cur + n - 1) % n;
         }
     }
 
@@ -1311,15 +1519,24 @@ mod tests {
         // Esc in a leaf pane returns to the hub.
         app.update(Action::BackToMenu);
         assert_eq!(app.mode, Mode::MainMenu);
-        // j/k move the menu cursor with wrap.
+        // Digit 2 = Permissions (was an unimplemented stub pre-Phase 5.5).
         app.update(Action::MoveDown);
         assert_eq!(app.mainmenu_cursor, 1);
         app.update(Action::MoveUp);
         assert_eq!(app.mainmenu_cursor, 0);
-        // Unimplemented pane logs a stub and stays on the menu.
+        // Providers (index 1) dispatches.
+        app.update(Action::MainMenuJump(1));
+        assert_eq!(app.mode, Mode::Providers);
+        app.update(Action::BackToMenu);
+        // Permissions (index 2) dispatches.
         app.update(Action::MainMenuJump(2));
+        assert_eq!(app.mode, Mode::Permissions);
+        app.update(Action::BackToMenu);
+        // MCP (index 3) dispatches.
+        app.update(Action::MainMenuJump(3));
+        assert_eq!(app.mode, Mode::Mcp);
+        app.update(Action::BackToMenu);
         assert_eq!(app.mode, Mode::MainMenu);
-        assert!(app.log.iter().any(|m| m.contains("not implemented")));
     }
 
     #[test]
