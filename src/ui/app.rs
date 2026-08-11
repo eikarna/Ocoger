@@ -49,6 +49,8 @@ pub enum Mode {
     Settings,
     /// Providers edit-input modal (Enter commits CST write).
     ProviderEdit,
+    /// Settings edit-input modal (Enter commits CST write, bools cycle).
+    SettingsEdit,
 }
 
 /// Event-loop async actions the pure `update()` cannot perform itself (spawn/
@@ -620,7 +622,8 @@ impl App {
                 Mode::PresetNameNew
                 | Mode::PresetConfirmAll
                 | Mode::GlobalEditPrompt
-                | Mode::ProviderEdit => {}
+                | Mode::ProviderEdit
+                | Mode::SettingsEdit => {}
                 Mode::Commands => {
                     let n = self.commands.len();
                     if n > 0 {
@@ -718,12 +721,18 @@ impl App {
                 }
             }
             ModalInput(c) => {
-                if self.mode == Mode::ModelEdit {
+                if matches!(
+                    self.mode,
+                    Mode::ModelEdit | Mode::ProviderEdit | Mode::SettingsEdit
+                ) {
                     self.modal_input.push(c);
                 }
             }
             ModalBackspace => {
-                if self.mode == Mode::ModelEdit {
+                if matches!(
+                    self.mode,
+                    Mode::ModelEdit | Mode::ProviderEdit | Mode::SettingsEdit
+                ) {
                     self.modal_input.pop();
                 }
             }
@@ -853,12 +862,18 @@ impl App {
                         | Mode::Preset
                         | Mode::PresetNameNew
                         | Mode::PresetConfirmAll
+                        | Mode::ProviderEdit
+                        | Mode::SettingsEdit
                 ) {
                     self.modal_input.clear();
                     self.pending_preset = None;
                     self.modal_focus = ModalFocus::Input;
                     if self.pending_command_name.take().is_some() {
                         self.mode = Mode::Commands;
+                    } else if self.providers_edit_field.is_some() {
+                        self.mode = Mode::Providers;
+                    } else if self.settings_rows.get(self.settings_cursor).is_some() {
+                        self.mode = Mode::Settings;
                     } else {
                         self.mode = Mode::List;
                     }
@@ -1079,17 +1094,17 @@ impl App {
             }
             SettingsEditStart => {
                 if self.mode == Mode::Settings {
-                    self.mode = Mode::GlobalEditPrompt; // reuse prompt modal shell for now
                     self.settings_edit_current();
                 }
             }
             SettingsEditCommit => {
-                if self.mode == Mode::Settings {
+                if self.mode == Mode::SettingsEdit {
                     let s = self.modal_input.trim().to_string();
                     if !s.is_empty() {
                         self.settings_edit_commit(&s);
                     }
                     self.modal_input.clear();
+                    self.mode = Mode::Settings;
                 }
             }
             ProviderEditStart(field) => {
@@ -1376,16 +1391,13 @@ impl App {
                 self.log(format!("{} = {}", row.key, next));
             }
         } else {
-            let Some(cfg) = self.config.as_mut() else {
-                return;
-            };
-            let _ = cfg.set_top_level_str(&row.key, &format!("{} (edit pending)", row.value));
-            let _ = cfg.save();
+            // Open a real input modal: type, Enter commits, Esc cancels.
+            self.modal_input.clear();
+            self.mode = Mode::SettingsEdit;
             self.log(format!(
-                "edit '{}' staged (modal input wired later; CST write done)",
+                "type new value for '{}', Enter commits, Esc cancels",
                 row.key
             ));
-            self.settings_refresh();
         }
     }
 

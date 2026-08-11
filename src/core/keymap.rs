@@ -231,6 +231,13 @@ impl Keymap {
         t.insert(def(Backspace, false, false, false), Action::ModalBackspace);
         m.insert(Mode::ProviderEdit, t);
 
+        // ----- Settings edit: char input + Enter commit / Esc cancel -----
+        let mut t = HashMap::new();
+        t.insert(def(Enter, false, false, false), Action::SettingsEditCommit);
+        t.insert(def(Esc, false, false, false), Action::CancelModal);
+        t.insert(def(Backspace, false, false, false), Action::ModalBackspace);
+        m.insert(Mode::SettingsEdit, t);
+
         // ----- Commands / Providers / Permissions / MCP / Process / Settings leaf panes -----
         for mode in [
             Mode::Commands,

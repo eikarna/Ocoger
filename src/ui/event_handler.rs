@@ -102,7 +102,9 @@ async fn event_loop(
                 Mode::Preset => Style::default().fg(app.theme.syntax_keyword),
                 Mode::PresetNameNew => Style::default().fg(app.theme.warn),
                 Mode::PresetConfirmAll => Style::default().fg(app.theme.warn),
-                Mode::GlobalEditPrompt | Mode::ProviderEdit => Style::default().fg(app.theme.warn),
+                Mode::GlobalEditPrompt | Mode::ProviderEdit | Mode::SettingsEdit => {
+                    Style::default().fg(app.theme.warn)
+                }
                 Mode::Commands
                 | Mode::Providers
                 | Mode::Mcp
@@ -179,7 +181,19 @@ async fn event_loop(
                 Mode::Mcp => mcp::render(f, chunks[1], app),
                 Mode::Permissions => permissions::render(f, chunks[1], app),
                 Mode::Process => process::render(f, chunks[1], app),
-                Mode::Settings => settings::render(f, chunks[1], app),
+                Mode::Settings | Mode::SettingsEdit => {
+                    settings::render(f, chunks[1], app);
+                    if app.mode == Mode::SettingsEdit {
+                        let bar = Line::from(vec![
+                            Span::styled("edit > ", Style::default().fg(app.theme.warn)),
+                            Span::raw(&app.modal_input),
+                        ]);
+                        f.render_widget(
+                            ratatui::widgets::Paragraph::new(bar),
+                            ratatui::layout::Rect::new(0, f.area().height - 1, f.area().width, 1),
+                        );
+                    }
+                }
                 Mode::GlobalEditPrompt => {
                     form::render(f, chunks[1], app);
                     // Rendered as a simple modal paragraph on top of the form.
