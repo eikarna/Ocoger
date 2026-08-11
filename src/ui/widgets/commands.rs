@@ -4,7 +4,7 @@ use crate::ui::app::App;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
@@ -37,7 +37,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             };
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{marker} {} ", i + 1)),
-                Span::styled(format!("{:20}", &cmd.name[..cmd.name.min(19)]), style),
+                Span::styled(format!("{:20}", &cmd.name[..cmd.name.len().min(19)]), style),
                 Span::raw(" "),
                 Span::styled(cmd.description.clone(), Style::default().fg(t.dim)),
             ]))
@@ -55,8 +55,10 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
 
     // Footer with key hints for this pane.
     let hint = "[j/k] nav  [n] new command  [d] delete";
-    frame.render_widget(
-        Paragraph::new(hint).style(Style::default().fg(t.dim)),
-        chunks[0],
-    );
+    let mut spans = header.spans;
+    spans.push(Span::styled(
+        format!("  {hint}"),
+        Style::default().fg(t.dim),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), chunks[0]);
 }
