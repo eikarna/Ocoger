@@ -10,3 +10,4 @@ pub mod picker;
 pub mod preset_picker;
 pub mod process;
 pub mod providers;
+pub mod settings;

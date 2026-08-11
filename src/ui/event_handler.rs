@@ -18,7 +18,7 @@ use crate::services::process_manager::ProcessManager;
 use crate::ui::app::{Action, App, Mode};
 use crate::ui::widgets::{
     agent_list, commands, diff_view, form, mainmenu, mcp, permissions, picker, preset_picker,
-    process, providers,
+    process, providers, settings,
 };
 
 /// Run the TUI until the user quits. Restores the terminal on all exits.
@@ -107,7 +107,8 @@ async fn event_loop(
                 | Mode::Providers
                 | Mode::Mcp
                 | Mode::Permissions
-                | Mode::Process => Style::default().fg(app.theme.accent),
+                | Mode::Process
+                | Mode::Settings => Style::default().fg(app.theme.accent),
             };
             let dirty_style = if app.dirty_count() > 0 {
                 Style::default()
@@ -166,6 +167,7 @@ async fn event_loop(
                 Mode::Mcp => mcp::render(f, chunks[1], app),
                 Mode::Permissions => permissions::render(f, chunks[1], app),
                 Mode::Process => process::render(f, chunks[1], app),
+                Mode::Settings => settings::render(f, chunks[1], app),
                 Mode::GlobalEditPrompt => {
                     form::render(f, chunks[1], app);
                     // Rendered as a simple modal paragraph on top of the form.

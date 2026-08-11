@@ -45,6 +45,8 @@ pub enum Mode {
     Permissions,
     /// Phase 5.6: Process & Logs pane — supervised `opencode` status + tail.
     Process,
+    /// Phase 5.7: Settings pane — theme, default_agent, autoupdate, share.
+    Settings,
 }
 
 /// Event-loop async actions the pure `update()` cannot perform itself (spawn/
@@ -152,6 +154,11 @@ pub enum Action {
     ProcessStart,
     ProcessKill,
     ProcessRestart,
+    /// Settings pane: cycle boolean value at cursor (bool keys only).
+    SettingsToggle,
+    /// Settings pane: start inline edit of string value at cursor.
+    SettingsEditStart,
+    SettingsEditCommit,
     /// MCP pane: toggle `enabled` on the highlighted server.
     McpToggle,
     /// MCP pane: flip `type` between local/remote on the highlighted server.
@@ -255,6 +262,9 @@ pub struct App {
     pub proc_state: crate::services::process_manager::ProcState,
     pub proc_pid: Option<u32>,
     pub proc_scroll: u16,
+    /// Phase 5.7: settings rows — known top-level keys alongside current value.
+    pub settings_rows: Vec<crate::core::settings::SettingsRow>,
+    pub settings_cursor: usize,
 }
 
 /// Phase 5 hub items. Index ↔ `mainmenu_cursor`. Binary digit keys (1..6)
@@ -278,6 +288,7 @@ pub const MAINMENU_ITEMS: &[(&str, &str)] = &[
         "Process & Logs",
         "supervised opencode status + tail (Phase 5.6 partial)",
     ),
+    ("Settings", "theme / default_agent / autoupdate / share"),
 ];
 
 impl App {
@@ -367,6 +378,11 @@ impl App {
             proc_state: crate::services::process_manager::ProcState::Idle,
             proc_pid: None,
             proc_scroll: 0,
+            settings_rows: config_value
+                .as_ref()
+                .map(|v| crate::core::settings::scan(v))
+                .unwrap_or_default(),
+            settings_cursor: 0,
         };
         // Best-effort: load presets on boot; errors land in the log but never
         // block the UI (a corrupt presets file shouldn't break agent editing).
@@ -608,6 +624,12 @@ impl App {
                     }
                 }
                 Mode::Process => {}
+                Mode::Settings => {
+                    let n = self.settings_rows.len();
+                    if n > 0 {
+                        Self::wrap(&mut self.settings_cursor, n, matches!(action, MoveDown));
+                    }
+                }
             },
             OpenForm => {
                 if self.mode == Mode::List {
@@ -1016,6 +1038,26 @@ impl App {
                 }
                 self.log("process action requested (handled by event loop)".to_string());
             }
+            SettingsToggle => {
+                if self.mode == Mode::Settings {
+                    self.settings_toggle_current();
+                }
+            }
+            SettingsEditStart => {
+                if self.mode == Mode::Settings {
+                    self.mode = Mode::GlobalEditPrompt; // reuse prompt modal shell for now
+                    self.settings_edit_current();
+                }
+            }
+            SettingsEditCommit => {
+                if self.mode == Mode::Settings {
+                    let s = self.modal_input.trim().to_string();
+                    if !s.is_empty() {
+                        self.settings_edit_commit(&s);
+                    }
+                    self.modal_input.clear();
+                }
+            }
             Quit => {
                 // Guard against data loss (BRD: don't destroy unsaved edits).
                 if self.dirty_count() == 0 {
@@ -1051,6 +1093,7 @@ impl App {
             3 => self.mode = Mode::Mcp,
             4 => self.mode = Mode::Commands,
             5 => self.mode = Mode::Process,
+            6 => self.mode = Mode::Settings,
             i => {
                 let name = MAINMENU_ITEMS.get(i).map(|(n, _)| *n).unwrap_or("?");
                 self.log(format!("'{name}' pane not implemented yet (Phase 5)"));
@@ -1218,6 +1261,96 @@ impl App {
         if self.log.len() > 5 {
             let drop_n = self.log.len() - 5;
             self.log.drain(..drop_n);
+        }
+    }
+
+    // --- Phase 5.7 (Settings) helpers ---------------------------------------------
+
+    fn settings_toggle_current(&mut self) {
+        let Some(row) = self.settings_rows.get(self.settings_cursor).cloned() else {
+            return;
+        };
+        let cur = row.value.as_str();
+        let next = match cur {
+            "true" | "allow" => "false",
+            "false" | "deny" => "true",
+            _ => {
+                self.log(format!("'{}' is not a boolean; use [e] to edit", row.key));
+                return;
+            }
+        };
+        let Some(cfg) = self.config.as_mut() else {
+            return;
+        };
+        if cfg.set_nested_str([&row.key], next).is_ok() {
+            let _ = cfg.save();
+            self.settings_rows[self.settings_cursor].value = next.to_string();
+            self.log(format!("{} = {}", row.key, next));
+        }
+    }
+
+    fn settings_edit_current(&mut self) {
+        let Some(row) = self.settings_rows.get(self.settings_cursor).cloned() else {
+            return;
+        };
+        if row.key == "share" {
+            // cycle: off -> ask -> on
+            let next = match row.value.as_str() {
+                "off" | "" => "ask",
+                "ask" => "on",
+                _ => "off",
+            };
+            let Some(cfg) = self.config.as_mut() else {
+                return;
+            };
+            if cfg.set_nested_str([&row.key], next).is_ok() {
+                let _ = cfg.save();
+                self.settings_rows[self.settings_cursor].value = next.to_string();
+                self.log(format!("{} = {}", row.key, next));
+            }
+        } else {
+            let Some(cfg) = self.config.as_mut() else {
+                return;
+            };
+            let _ = cfg.set_top_level_str(&row.key, &format!("{} (edit pending)", row.value));
+            let _ = cfg.save();
+            self.log(format!(
+                "edit '{}' staged (modal input wired later; CST write done)",
+                row.key
+            ));
+            self.settings_refresh();
+        }
+    }
+
+    fn settings_edit_commit(&mut self, value: &str) {
+        let Some(row) = self.settings_rows.get(self.settings_cursor).cloned() else {
+            return;
+        };
+        // Type-aware write: known bools map to typed CST; others stay strings.
+        let known_bool = matches!(row.key.as_str(), "autoupdate" | "share");
+        let Some(cfg) = self.config.as_mut() else {
+            return;
+        };
+        let res = if known_bool {
+            cfg.set_nested_value(
+                [&row.key],
+                jsonc_parser::cst::CstInputValue::Bool(value == "true"),
+            )
+        } else {
+            cfg.set_top_level_str(&row.key, value)
+        };
+        if res.is_ok() {
+            let _ = cfg.save();
+            self.settings_refresh();
+            self.log(format!("{} = {}", row.key, value));
+        }
+    }
+
+    fn settings_refresh(&mut self) {
+        if let Some(cfg) = self.config.as_ref() {
+            if let Ok(v) = cfg.value() {
+                self.settings_rows = crate::core::settings::scan(&v);
+            }
         }
     }
 

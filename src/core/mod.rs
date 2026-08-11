@@ -10,4 +10,5 @@ pub mod mcp;
 pub mod permissions;
 pub mod presets;
 pub mod providers;
+pub mod settings;
 pub(crate) mod test_support;

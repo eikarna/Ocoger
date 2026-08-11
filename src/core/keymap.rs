@@ -258,6 +258,14 @@ impl Keymap {
                     t.insert(def(Char('k'), false, false, false), Action::ProcessKill);
                     t.insert(def(Char('r'), false, false, false), Action::ProcessRestart);
                 }
+                Mode::Settings => {
+                    t.insert(def(Space, false, false, false), Action::SettingsToggle);
+                    t.insert(
+                        def(Char('e'), false, false, false),
+                        Action::SettingsEditStart,
+                    );
+                    t.insert(def(Enter, false, false, false), Action::SettingsEditCommit);
+                }
                 _ => {}
             }
             m.insert(mode, t);
@@ -360,6 +368,7 @@ fn parse_mode(s: &str) -> Option<Mode> {
         "mcp" => Some(Mode::Mcp),
         "permissions" | "perms" => Some(Mode::Permissions),
         "process" => Some(Mode::Process),
+        "settings" | "theme" => Some(Mode::Settings),
         _ => None,
     }
 }
