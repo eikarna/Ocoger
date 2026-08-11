@@ -251,16 +251,24 @@ async fn event_loop(
             match event::read()? {
                 Event::Key(key) => {
                     tracing::debug!(?key, mode = ?app.mode, "key event");
-                    // Hard escape hatch: Ctrl+C exits regardless of mode or
-                    // keymap state, so a bad table can never trap the user.
-                    if key.kind == KeyEventKind::Press
-                        && key.code == KeyCode::Char('c')
-                        && key
+                    // Hard escape hatches, evaluated before the keymap so a bad
+                    // table can never trap the user:
+                    //   Ctrl+C  — conventional SIGINT substitute (raw mode eats
+                    //             the real signal).
+                    //   Alt+F4  — the Windows console hands this to the focused
+                    //             app in raw mode instead of closing the window,
+                    //             so we must honour it ourselves.
+                    if key.kind == KeyEventKind::Press {
+                        let ctrl = key
                             .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL)
-                    {
-                        tracing::debug!("ctrl+c hard exit");
-                        return Ok(());
+                            .contains(crossterm::event::KeyModifiers::CONTROL);
+                        let alt = key.modifiers.contains(crossterm::event::KeyModifiers::ALT);
+                        if (ctrl && key.code == KeyCode::Char('c'))
+                            || (alt && key.code == KeyCode::F(4))
+                        {
+                            tracing::debug!(?key, "hard exit");
+                            return Ok(());
+                        }
                     }
                     if let Some(action) = dispatch_key_if_press(app, key) {
                         tracing::debug!(?action, mode = ?app.mode, "action dispatched");

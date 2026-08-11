@@ -108,8 +108,8 @@ impl Keymap {
         t.insert(def(Char('k'), false, false, false), Action::MoveUp);
         t.insert(def(Up, false, false, false), Action::MoveUp);
         t.insert(def(Enter, false, false, false), Action::MainMenuSelect);
-        // Digit shortcuts 1..=6 jump directly to a pane.
-        for (i, ch) in ('1'..='6').enumerate() {
+        // Digit shortcuts 1..=7 jump directly to a pane (one per menu item).
+        for (i, ch) in ('1'..='7').enumerate() {
             t.insert(def(Char(ch), false, false, false), Action::MainMenuJump(i));
         }
         m.insert(Mode::MainMenu, t);
@@ -292,7 +292,8 @@ impl Keymap {
                 }
                 Mode::Process => {
                     t.insert(def(Char('s'), false, false, false), Action::ProcessStart);
-                    t.insert(def(Char('k'), false, false, false), Action::ProcessKill);
+                    // 'k' stays MoveUp (see base leaf bindings); kill gets 'x'.
+                    t.insert(def(Char('x'), false, false, false), Action::ProcessKill);
                     t.insert(def(Char('r'), false, false, false), Action::ProcessRestart);
                 }
                 Mode::Settings => {

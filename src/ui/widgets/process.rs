@@ -33,7 +33,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         ),
         Span::raw("   "),
         Span::styled(
-            "[S] start  [K] kill  [R] restart  [j/k] scroll tail",
+            "[S] start  [X] kill  [R] restart  [j/k] scroll tail",
             Style::default().fg(t.dim),
         ),
     ]);
