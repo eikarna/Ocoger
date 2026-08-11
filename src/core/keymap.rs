@@ -238,6 +238,14 @@ impl Keymap {
         t.insert(def(Backspace, false, false, false), Action::ModalBackspace);
         m.insert(Mode::SettingsEdit, t);
 
+        // ----- Settings edit + Provider edit can bail via Ctrl+C too -----
+        if let Some(tbl) = m.get_mut(&Mode::SettingsEdit) {
+            tbl.insert(def(Char('c'), true, false, false), Action::Quit);
+        }
+        if let Some(tbl) = m.get_mut(&Mode::ProviderEdit) {
+            tbl.insert(def(Char('c'), true, false, false), Action::Quit);
+        }
+
         // ----- Commands / Providers / Permissions / MCP / Process / Settings leaf panes -----
         for mode in [
             Mode::Commands,
@@ -289,14 +297,17 @@ impl Keymap {
                 }
                 Mode::Settings => {
                     t.insert(def(Space, false, false, false), Action::SettingsToggle);
+                    // Enter in Settings = open edit on the current row.
+                    t.insert(def(Enter, false, false, false), Action::SettingsEditStart);
                     t.insert(
                         def(Char('e'), false, false, false),
                         Action::SettingsEditStart,
                     );
-                    t.insert(def(Enter, false, false, false), Action::SettingsEditCommit);
                 }
                 _ => {}
             }
+            // Every leaf pane gets Ctrl+C → Quit, so raw-mode users can always bail.
+            t.insert(def(Char('c'), true, false, false), Action::Quit);
             m.insert(mode, t);
         }
 
