@@ -35,6 +35,10 @@ pub enum Mode {
     PresetConfirmAll,
     /// GlobalReadOnly edit attempt → "promote to project?" confirmation.
     GlobalEditPrompt,
+    /// Phase 5.2: Commands pane (.opencode/commands/*.md listing).
+    Commands,
+    /// Phase 5.3: Providers pane — providers from merged config (read-only list).
+    Providers,
 }
 
 /// Event-loop async actions the pure `update()` cannot perform itself (spawn/
@@ -204,17 +208,32 @@ pub struct App {
     pending_global_edit: Option<(String, i32)>,
     /// Set by `Save` handling; `true` iff the last save wrote ≥1 file.
     last_save_wrote: bool,
+    /// Phase 5.2: scanned `.opencode/commands/*.md` entries.
+    pub commands: Vec<crate::core::commands::Command>,
+    pub commands_cursor: usize,
+    /// Reserved for when command create/delete lands (widget renders the flag).
+    pub commands_is_dirty: bool,
+    /// Phase 5.3: providers scanned once at boot from merged config.
+    pub providers_list: Vec<crate::core::providers::ProviderInfo>,
+    pub providers_cursor: usize,
+    /// Reserved for when provider edit/delete lands (widget renders the flag).
+    pub providers_is_dirty: bool,
 }
 
 /// Phase 5 hub items. Index ↔ `mainmenu_cursor`. Binary digit keys (1..6)
 /// jump directly. Implemented panes dispatch; unimplemented ones log a stub.
 pub const MAINMENU_ITEMS: &[(&str, &str)] = &[
-    ("Subagents", "edit .opencode/agents/*.md — models, params, presets"),
-    ("Providers & Models", "(soon) provider.baseURL / apiKey / headers"),
-    ("Permissions", "(soon) permission.<tool>: ask/allow/deny + globs"),
-    ("MCP Servers", "(soon) mcp.<name>: enable/edit local|remote"),
-    ("Commands", "(soon) .opencode/commands/*.md snippets"),
-    ("Process & Logs", "(soon) supervised opencode status + tail pane"),
+    (
+        "Subagents",
+        "edit .opencode/agents/*.md — models, params, presets",
+    ),
+    (
+        "Providers & Models",
+        "provider.baseURL / apiKey / headers + blacklist/whitelist",
+    ),
+    ("Permissions", "permission.<tool>: ask/allow/deny + globs"),
+    ("MCP Servers", "mcp.<name>: enable/edit local|remote"),
+    ("Commands", ".opencode/commands/*.md snippets — created!"),
 ];
 
 impl App {
@@ -236,6 +255,12 @@ impl App {
             .map(|s| s.to_string())
             .collect();
         let (fetch_tx, fetch_rx) = tokio::sync::mpsc::unbounded_channel();
+        let commands = crate::core::commands::list_commands(&project_root).unwrap_or_default();
+        let providers_list = config
+            .as_ref()
+            .and_then(|c| c.value().ok())
+            .and_then(|v| crate::core::providers::ProviderInfo::scan_providers(&v).ok())
+            .unwrap_or_default();
         let mut app = Self {
             agents,
             cursor: 0,
@@ -272,6 +297,12 @@ impl App {
             theme: Theme::default(),
             pending_global_edit: None,
             last_save_wrote: false,
+            commands,
+            commands_cursor: 0,
+            commands_is_dirty: false,
+            providers_list,
+            providers_cursor: 0,
+            providers_is_dirty: false,
         };
         // Best-effort: load presets on boot; errors land in the log but never
         // block the UI (a corrupt presets file shouldn't break agent editing).
@@ -488,6 +519,26 @@ impl App {
                     }
                 }
                 Mode::PresetNameNew | Mode::PresetConfirmAll | Mode::GlobalEditPrompt => {}
+                Mode::Commands => {
+                    let n = self.commands.len();
+                    if n > 0 {
+                        self.commands_cursor = if matches!(action, MoveDown) {
+                            (self.commands_cursor + 1) % n
+                        } else {
+                            (self.commands_cursor + n - 1) % n
+                        };
+                    }
+                }
+                Mode::Providers => {
+                    let n = self.providers_list.len();
+                    if n > 0 {
+                        self.providers_cursor = if matches!(action, MoveDown) {
+                            (self.providers_cursor + 1) % n
+                        } else {
+                            (self.providers_cursor + n - 1) % n
+                        };
+                    }
+                }
             },
             OpenForm => {
                 if self.mode == Mode::List {
@@ -881,6 +932,8 @@ impl App {
         }
         match self.mainmenu_cursor {
             0 => self.mode = Mode::List,
+            1 => self.mode = Mode::Providers,
+            4 => self.mode = Mode::Commands,
             i => {
                 let name = MAINMENU_ITEMS.get(i).map(|(n, _)| *n).unwrap_or("?");
                 self.log(format!("'{name}' pane not implemented yet (Phase 5)"));
@@ -888,7 +941,8 @@ impl App {
         }
     }
 
-    pub fn form_item_count(&self) -> usize {        match self.form_band {
+    pub fn form_item_count(&self) -> usize {
+        match self.form_band {
             Panel::AgentParams => 5, // model, temperature, top_k, top_p, reasoning_effort
             Panel::GlobalConfig => self.config_items.len(),
         }
@@ -1381,7 +1435,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("a.md");
         std::fs::write(&path, "---\nmodel: original\n---\nbody\n").unwrap();
-        let mut app = App::new(vec![crate::core::agent_parser::load_agent(&path).unwrap()], dir);
+        let mut app = App::new(
+            vec![crate::core::agent_parser::load_agent(&path).unwrap()],
+            dir,
+        );
         app.mode = Mode::List;
         app.agents[0].is_selected = true;
         app.update(Action::OpenModelModal);

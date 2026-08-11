@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use crate::services::process_manager::ProcessManager;
 use crate::ui::app::{Action, App, Mode};
-use crate::ui::widgets::{agent_list, diff_view, form, mainmenu, picker, preset_picker};
+use crate::ui::widgets::{
+    agent_list, commands, diff_view, form, mainmenu, picker, preset_picker, providers,
+};
 
 /// Run the TUI until the user quits. Restores the terminal on all exits.
 pub async fn run(mut app: App) -> io::Result<()> {
@@ -35,7 +37,11 @@ pub async fn run(mut app: App) -> io::Result<()> {
     proc_mgr.shutdown_sync();
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
     terminal.show_cursor()?;
     result
 }
@@ -88,6 +94,7 @@ async fn event_loop(
                 Mode::PresetNameNew => Style::default().fg(app.theme.warn),
                 Mode::PresetConfirmAll => Style::default().fg(app.theme.warn),
                 Mode::GlobalEditPrompt => Style::default().fg(app.theme.warn),
+                Mode::Commands | Mode::Providers => Style::default().fg(app.theme.accent),
             };
             let dirty_style = if app.dirty_count() > 0 {
                 Style::default()
@@ -141,6 +148,8 @@ async fn event_loop(
                     agent_list::render(f, chunks[1], app);
                     preset_picker::render(f, f.area(), app);
                 }
+                Mode::Commands => commands::render(f, chunks[1], app),
+                Mode::Providers => providers::render(f, chunks[1], app),
                 Mode::GlobalEditPrompt => {
                     form::render(f, chunks[1], app);
                     // Rendered as a simple modal paragraph on top of the form.
@@ -205,10 +214,7 @@ async fn event_loop(
 /// Geometry mirrors the draw path: header(1) + content starts at y=1,
 /// list block has a 1-row border + 1 header row before agent rows.
 /// Returns None for events we don't bind (scroll, drag, move, right-click).
-pub(crate) fn dispatch_mouse(
-    app: &App,
-    m: crossterm::event::MouseEvent,
-) -> Option<Action> {
+pub(crate) fn dispatch_mouse(app: &App, m: crossterm::event::MouseEvent) -> Option<Action> {
     // Scroll wheel: route to the active scrollable view.
     match m.kind {
         MouseEventKind::ScrollDown => {
@@ -216,7 +222,7 @@ pub(crate) fn dispatch_mouse(
                 Mode::Picker => Some(Action::MoveDown),
                 Mode::Preset => Some(Action::MoveDown),
                 Mode::Diff => Some(Action::DiffScroll(3)),
-                Mode::List => Some(Action::MoveDown),
+                Mode::List | Mode::Commands | Mode::Providers => Some(Action::MoveDown),
                 _ => None,
             };
         }
@@ -225,7 +231,7 @@ pub(crate) fn dispatch_mouse(
                 Mode::Picker => Some(Action::MoveUp),
                 Mode::Preset => Some(Action::MoveUp),
                 Mode::Diff => Some(Action::DiffScroll(-3)),
-                Mode::List => Some(Action::MoveUp),
+                Mode::List | Mode::Commands | Mode::Providers => Some(Action::MoveUp),
                 _ => None,
             };
         }
@@ -304,7 +310,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 app.update(Action::ToggleModalFocus);
                 return Action::ToggleModalFocus;
             }
-            KeyCode::Char(c) if !key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 let action = if app.mode == Mode::Picker {
                     Action::PickerInput(c)
                 } else {
@@ -433,8 +443,7 @@ fn handle_key_via_keymap(app: &mut App, key: KeyEvent) -> Action {
                         app.keymap.lookup(app.mode, lower)
                     })
                     .or_else(|| {
-                        let upper_no_shift =
-                            spec_with(spec.code, spec.ctrl, false, spec.alt);
+                        let upper_no_shift = spec_with(spec.code, spec.ctrl, false, spec.alt);
                         app.keymap.lookup(app.mode, upper_no_shift)
                     })
             } else {
@@ -718,6 +727,9 @@ mod tests {
         assert_eq!(a, Some(Action::MoveCursorTo(1)));
         app.update(a.unwrap());
         assert_eq!(app.cursor, 1);
-        assert!(!app.agents[1].is_selected, "cursor-move alone must not toggle");
+        assert!(
+            !app.agents[1].is_selected,
+            "cursor-move alone must not toggle"
+        );
     }
 }

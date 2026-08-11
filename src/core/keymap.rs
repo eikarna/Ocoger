@@ -224,6 +224,18 @@ impl Keymap {
         t.insert(def(Esc, false, false, false), Action::GlobalEditNo);
         m.insert(Mode::GlobalEditPrompt, t);
 
+        // ----- Commands / Providers (Phase 5 leaf panes, read-only lists) -----
+        for mode in [Mode::Commands, Mode::Providers] {
+            let mut t = HashMap::new();
+            t.insert(def(Esc, false, false, false), Action::BackToMenu);
+            t.insert(def(Char('q'), false, false, false), Action::BackToMenu);
+            t.insert(def(Char('j'), false, false, false), Action::MoveDown);
+            t.insert(def(Down, false, false, false), Action::MoveDown);
+            t.insert(def(Char('k'), false, false, false), Action::MoveUp);
+            t.insert(def(Up, false, false, false), Action::MoveUp);
+            m.insert(mode, t);
+        }
+
         Self { tables: m }
     }
 
@@ -316,6 +328,8 @@ fn parse_mode(s: &str) -> Option<Mode> {
         "preset_name_new" | "preset_new" => Some(Mode::PresetNameNew),
         "preset_confirm_all" | "preset_confirm" => Some(Mode::PresetConfirmAll),
         "global_edit_prompt" => Some(Mode::GlobalEditPrompt),
+        "commands" => Some(Mode::Commands),
+        "providers" => Some(Mode::Providers),
         _ => None,
     }
 }
