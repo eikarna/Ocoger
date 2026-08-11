@@ -564,10 +564,14 @@ fn handle_key_via_keymap(app: &mut App, key: KeyEvent) -> Action {
             // Char that isn't bound to an action still routes to the buffer.
             match (app.mode, key.code) {
                 (Mode::ModelEdit, KeyCode::Char(c)) => Action::ModalInput(c),
+                (Mode::ProviderEdit, KeyCode::Char(c)) => Action::ModalInput(c),
+                (Mode::SettingsEdit, KeyCode::Char(c)) => Action::ModalInput(c),
                 (Mode::Picker, KeyCode::Char(c)) => Action::PickerInput(c),
                 (Mode::Preset, KeyCode::Char(c)) => Action::PresetInput(c),
                 (Mode::PresetNameNew, KeyCode::Char(c)) => Action::PresetInput(c),
                 (Mode::ModelEdit, KeyCode::Backspace) => Action::ModalBackspace,
+                (Mode::ProviderEdit, KeyCode::Backspace) => Action::ModalBackspace,
+                (Mode::SettingsEdit, KeyCode::Backspace) => Action::ModalBackspace,
                 (Mode::Picker, KeyCode::Backspace) => Action::PickerBackspace,
                 (Mode::Preset, KeyCode::Backspace) => Action::PresetBackspace,
                 (Mode::PresetNameNew, KeyCode::Backspace) => Action::PresetBackspace,
@@ -826,5 +830,24 @@ mod tests {
             !app.agents[1].is_selected,
             "cursor-move alone must not toggle"
         );
+    }
+
+    /// The edit modals are keyboard-driven text fields: unbound printable
+    /// chars must reach the buffer, or the modal looks broken (typing does
+    /// nothing). This regressed for ProviderEdit/SettingsEdit, which were
+    /// missing from the fallthrough table.
+    #[test]
+    fn edit_modals_route_printable_chars_into_modal_input() {
+        for mode in [Mode::ModelEdit, Mode::ProviderEdit, Mode::SettingsEdit] {
+            let mut app = scratch_app();
+            app.mode = mode;
+            app.modal_input.clear();
+            for ch in "abc".chars() {
+                dispatch_key_if_press(&mut app, key(KeyCode::Char(ch), KeyEventKind::Press));
+            }
+            assert_eq!(app.modal_input, "abc", "{mode:?} must accept typed chars");
+            dispatch_key_if_press(&mut app, key(KeyCode::Backspace, KeyEventKind::Press));
+            assert_eq!(app.modal_input, "ab", "{mode:?} must accept Backspace");
+        }
     }
 }

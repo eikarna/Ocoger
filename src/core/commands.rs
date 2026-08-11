@@ -31,6 +31,16 @@ impl Command {
         })
     }
 
+    /// Extract just `description` from frontmatter. `name` is optional in
+    /// OpenCode command files (the filename is the command name), so a missing
+    /// or partial frontmatter must not discard the file.
+    pub fn description_from_frontmatter(raw_yaml: &str) -> Option<String> {
+        let map: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(raw_yaml).ok()?;
+        map.get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
     /// Serialize command → YAML frontmatter.
     pub fn serialize(&self) -> String {
         format!(
@@ -51,30 +61,61 @@ pub enum ParseError {
     MissingField(&'static str),
 }
 
-/// Scan `.opencode/commands/*.md` and collect all commands.
+/// Scan project and global command dirs, project shadowing global by name.
+/// OpenCode reads `command/` (singular) as well as the older `commands/`;
+/// both are accepted here so either layout is picked up.
 pub fn list_commands(project_root: &std::path::Path) -> Result<Vec<Command>, ScanError> {
-    let cmd_dir = project_root.join(".opencode").join("commands");
-    if !cmd_dir.exists() {
-        return Ok(Vec::new());
-    }
+    let mut by_name: std::collections::BTreeMap<String, Command> =
+        std::collections::BTreeMap::new();
 
-    let mut commands = Vec::new();
-    for entry in std::fs::read_dir(cmd_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().map(|e| e == "md").unwrap_or(false) {
-            let content = std::fs::read_to_string(&path).ok().unwrap_or_default();
-            if let Some((y1, y2)) = find_delimiters(&content) {
-                let raw_yaml = &content[y1..y2];
-                match Command::parse_from_frontmatter(raw_yaml) {
-                    Ok(cmd) => commands.push(cmd),
-                    Err(_) => {}
-                }
-            }
+    // Global first, so project entries overwrite same-named globals.
+    if let Some(global) = crate::core::config_resolver::global_config_dir() {
+        for dir in [global.join("command"), global.join("commands")] {
+            scan_dir_into(&dir, &mut by_name)?;
         }
     }
-    commands.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(commands)
+    let project = project_root.join(".opencode");
+    for dir in [project.join("command"), project.join("commands")] {
+        scan_dir_into(&dir, &mut by_name)?;
+    }
+
+    Ok(by_name.into_values().collect())
+}
+
+fn scan_dir_into(
+    dir: &std::path::Path,
+    out: &mut std::collections::BTreeMap<String, Command>,
+) -> Result<(), ScanError> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().map(|e| e == "md").unwrap_or(false) {
+            let content = std::fs::read_to_string(&path).unwrap_or_default();
+            // `name` is optional in OpenCode command files — the filename is
+            // the command name. Only `description` comes from frontmatter.
+            let stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if stem.is_empty() {
+                continue;
+            }
+            let description = find_delimiters(&content)
+                .map(|(y1, y2)| &content[y1..y2])
+                .and_then(|yaml| Command::description_from_frontmatter(yaml))
+                .unwrap_or_default();
+            out.insert(
+                stem.clone(),
+                Command {
+                    name: stem,
+                    description,
+                },
+            );
+        }
+    }
+    Ok(())
 }
 
 fn find_delimiters(content: &str) -> Option<(usize, usize)> {
@@ -94,16 +135,28 @@ pub enum ScanError {
 mod tests {
     use super::*;
 
-    #[test]
-    fn scan_parses_valid_command_frontmatter() {
+    /// Point the global-config lookup at an empty temp dir so the developer's
+    /// real `~/.config/opencode/command` can't leak into these assertions.
+    fn isolated_root(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "ocoger-cmd-{}-{}",
+            "ocoger-cmd-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos()
         ));
+        std::fs::create_dir_all(dir.join("global-empty")).unwrap();
+        unsafe {
+            std::env::set_var("OCOGAR_GLOBAL_CONFIG_DIR", dir.join("global-empty"));
+        }
+        dir
+    }
+
+    #[test]
+    fn scan_parses_valid_command_frontmatter() {
+        let _guard = crate::core::test_support::ENV_LOCK.lock().unwrap();
+        let dir = isolated_root("parse");
         let cdir = dir.join(".opencode").join("commands");
         std::fs::create_dir_all(&cdir).unwrap();
         std::fs::write(
@@ -117,9 +170,34 @@ mod tests {
         assert_eq!(out[0].description, "amend last commit");
     }
 
+    /// OpenCode command files often carry only `description` (or no frontmatter
+    /// at all) — the filename is the command name. Those must still be listed.
+    #[test]
+    fn scan_accepts_files_without_name_field() {
+        let _guard = crate::core::test_support::ENV_LOCK.lock().unwrap();
+        let dir = isolated_root("noname");
+        // Singular `command/` is the layout OpenCode itself uses.
+        let cdir = dir.join(".opencode").join("command");
+        std::fs::create_dir_all(&cdir).unwrap();
+        std::fs::write(
+            cdir.join("ship.md"),
+            "---\ndescription: cut a release\n---\nrun the release steps\n",
+        )
+        .unwrap();
+        std::fs::write(cdir.join("bare.md"), "no frontmatter at all\n").unwrap();
+        let out = list_commands(&dir).unwrap();
+        assert_eq!(out.len(), 2, "both files listed");
+        assert_eq!(out[0].name, "bare", "filename is the command name");
+        assert_eq!(out[0].description, "", "missing description is empty");
+        assert_eq!(out[1].name, "ship");
+        assert_eq!(out[1].description, "cut a release");
+    }
+
     #[test]
     fn scan_missing_dir_is_empty_not_error() {
-        let out = list_commands(std::path::Path::new("no-such-root")).unwrap();
+        let _guard = crate::core::test_support::ENV_LOCK.lock().unwrap();
+        let dir = isolated_root("missing");
+        let out = list_commands(&dir.join("no-such-root")).unwrap();
         assert!(out.is_empty());
     }
 }
