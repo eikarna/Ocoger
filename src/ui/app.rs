@@ -574,7 +574,8 @@ impl App {
     }
 
     pub fn update(&mut self, action: Action) {
-        let _typed = !self.modal_input.trim().is_empty();
+        // Log every update for freeze diagnostics. Cheap: last mode+action only.
+        tracing::debug!(mode = ?self.mode, action = ?action, "update");
 
         use Action::*;
         match action {
@@ -1983,11 +1984,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         // Frame that previously left raw mode active if a panic escaped.
         let res = terminal.draw(|f| {
-            crate::ui::widgets::settings::render(
-                f,
-                f.area(),
-                &app,
-            );
+            crate::ui::widgets::settings::render(f, f.area(), &app);
         });
         res.unwrap();
     }
