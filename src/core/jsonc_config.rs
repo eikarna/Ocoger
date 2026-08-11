@@ -181,6 +181,75 @@ impl JsoncConfig {
         Ok(())
     }
 
+    /// Surgical nested-path value mutation (string/bool/number) preserving
+    /// comments. `Bool`/`Number` survive as typed values; use for `enabled`
+    /// toggles & enum-ish fields like ask/allow/deny.
+    pub fn set_nested_value<I, S>(&mut self, path: I, val: CstInputValue) -> Result<(), ConfigError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut path: Vec<String> = path.into_iter().map(|s| s.as_ref().to_owned()).collect();
+        if path.is_empty() {
+            return Err(ConfigError::NotAnObject);
+        }
+        let root = parse_cst(&self.raw)?;
+        let mut obj = root.object_value_or_set();
+        let leaf = path.pop().unwrap();
+        for seg in path {
+            match obj.object_value_or_create(&seg) {
+                Some(o) => obj = o,
+                None => return Err(ConfigError::NotAnObject),
+            }
+        }
+        match obj.get(&leaf) {
+            Some(prop) => prop.set_value(val),
+            None => {
+                obj.append(&leaf, val);
+            }
+        }
+        self.raw = root.to_string();
+        Ok(())
+    }
+
+    /// Surgical removal of a top-level or nested key, preserving everything
+    /// around it. Used by MCP/provider delete flows.
+    pub fn remove_key(&mut self, key: &str) -> Result<(), ConfigError> {
+        let root = parse_cst(&self.raw)?;
+        let obj = root.object_value_or_set();
+        if let Some(prop) = obj.get(key) {
+            prop.remove();
+        }
+        self.raw = root.to_string();
+        Ok(())
+    }
+
+    /// Nested-path removal: deletes `path` leaf from its parent object.
+    pub fn remove_nested<I, S>(&mut self, path: I) -> Result<(), ConfigError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut path: Vec<String> = path.into_iter().map(|s| s.as_ref().to_owned()).collect();
+        if path.is_empty() {
+            return Err(ConfigError::NotAnObject);
+        }
+        let root = parse_cst(&self.raw)?;
+        let mut obj = root.object_value_or_set();
+        let leaf = path.pop().unwrap();
+        for seg in path {
+            match obj.object_value_or_create(&seg) {
+                Some(o) => obj = o,
+                None => return Ok(()), // parent missing → nothing to delete
+            }
+        }
+        if let Some(prop) = obj.get(&leaf) {
+            prop.remove();
+        }
+        self.raw = root.to_string();
+        Ok(())
+    }
+
     /// One row display in the global config pane.
     /// Extract the form fields the PRD's global pane cares about.
     pub fn config_items(&self) -> Result<Vec<ConfigItem>, ConfigError> {

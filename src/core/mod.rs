@@ -6,6 +6,8 @@ pub mod diff;
 pub mod fs_util;
 pub mod jsonc_config;
 pub mod keymap;
+pub mod mcp;
+pub mod permissions;
 pub mod presets;
 pub mod providers;
 pub(crate) mod test_support;
