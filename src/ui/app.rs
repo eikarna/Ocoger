@@ -1972,6 +1972,27 @@ mod tests {
     }
 
     #[test]
+    fn settings_render_does_not_panic_on_empty_rows() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = App::new(vec![agent("a")], PathBuf::from("."));
+        // Simulate Settings opened before any config is loaded (rows empty).
+        app.settings_rows.clear();
+        app.mode = Mode::Settings;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        // Frame that previously left raw mode active if a panic escaped.
+        let res = terminal.draw(|f| {
+            crate::ui::widgets::settings::render(
+                f,
+                f.area(),
+                &app,
+            );
+        });
+        res.unwrap();
+    }
+
+    #[test]
     fn settings_mode_dispatches_edit_and_commit_round_trip() {
         let mut app = App::new(vec![agent("a")], PathBuf::from("."));
         // Enter Settings via MainMenu index 6 (boot hub = 0, then jump).

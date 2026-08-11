@@ -23,6 +23,16 @@ use crate::ui::widgets::{
 
 /// Run the TUI until the user quits. Restores the terminal on all exits.
 pub async fn run(mut app: App) -> io::Result<()> {
+    // A panic inside `render` while raw mode is engaged leaves the terminal
+    // hijacked: cursor invisible, Ctrl+C dead. Restore the terminal from a
+    // panic hook so users can see the panic message instead of a frozen screen.
+    let orig_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        orig_hook(info);
+    }));
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     // Mouse capture: crossterm translates term escape-sequences into
