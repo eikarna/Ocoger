@@ -16,6 +16,14 @@
 
 ---
 
+## Screenshots
+
+| Subagents pane (list + batch-save) | Model edit modal |
+|---|---|
+| ![main](assets/main.png) | ![edit-models](assets/edit-models.png) |
+
+---
+
 ## Installation
 
 ### One-line installers (prebuilt binaries)
