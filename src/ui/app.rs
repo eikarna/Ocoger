@@ -865,6 +865,8 @@ impl App {
                         | Mode::ProviderEdit
                         | Mode::SettingsEdit
                 ) {
+                    // SettingsEdit cancel returns to Settings (mode marker, not row present).
+                    let return_to_settings = self.mode == Mode::SettingsEdit;
                     self.modal_input.clear();
                     self.pending_preset = None;
                     self.modal_focus = ModalFocus::Input;
@@ -872,7 +874,7 @@ impl App {
                         self.mode = Mode::Commands;
                     } else if self.providers_edit_field.is_some() {
                         self.mode = Mode::Providers;
-                    } else if self.settings_rows.get(self.settings_cursor).is_some() {
+                    } else if return_to_settings {
                         self.mode = Mode::Settings;
                     } else {
                         self.mode = Mode::List;
