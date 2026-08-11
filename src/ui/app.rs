@@ -1972,6 +1972,36 @@ mod tests {
     }
 
     #[test]
+    fn settings_mode_dispatches_edit_and_commit_round_trip() {
+        let mut app = App::new(vec![agent("a")], PathBuf::from("."));
+        // Enter Settings via MainMenu index 6 (boot hub = 0, then jump).
+        app.mode = Mode::MainMenu;
+        app.update(Action::MainMenuJump(6));
+        assert_eq!(app.mode, Mode::Settings);
+        // Enter opens the typed-input modal on the highlighted row.
+        app.update(Action::SettingsEditStart);
+        assert_eq!(app.mode, Mode::SettingsEdit);
+        // Type then commit (theme is the first row).
+        for ch in "dark".chars() {
+            app.update(Action::ModalInput(ch));
+        }
+        app.update(Action::SettingsEditCommit);
+        assert_eq!(app.mode, Mode::Settings);
+        assert_eq!(
+            app.settings_rows
+                .iter()
+                .find(|r| r.key == "theme")
+                .map(|r| r.value.as_str()),
+            Some("dark"),
+            "commit persists to in-memory rows (CST write to disk applied on save)"
+        );
+        // Esc in edit mode returns to Settings.
+        app.update(Action::SettingsEditStart);
+        app.update(Action::CancelModal);
+        assert_eq!(app.mode, Mode::Settings);
+    }
+
+    #[test]
     fn quit_guard_blocks_with_dirty() {
         let mut app = app3();
         app.agents[0].is_dirty = true;
