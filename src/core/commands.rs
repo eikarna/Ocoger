@@ -65,7 +65,7 @@ pub fn list_commands(project_root: &std::path::Path) -> Result<Vec<Command>, Sca
         if path.extension().map(|e| e == "md").unwrap_or(false) {
             let content = std::fs::read_to_string(&path).ok().unwrap_or_default();
             if let Some((y1, y2)) = find_delimiters(&content) {
-                let raw_yaml = &content[y1 + 3..y2];
+                let raw_yaml = &content[y1..y2];
                 match Command::parse_from_frontmatter(raw_yaml) {
                     Ok(cmd) => commands.push(cmd),
                     Err(_) => {}
@@ -88,4 +88,38 @@ fn find_delimiters(content: &str) -> Option<(usize, usize)> {
 pub enum ScanError {
     #[error("IO error: {0}")]
     IO(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scan_parses_valid_command_frontmatter() {
+        let dir = std::env::temp_dir().join(format!(
+            "ocoger-cmd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let cdir = dir.join(".opencode").join("commands");
+        std::fs::create_dir_all(&cdir).unwrap();
+        std::fs::write(
+            cdir.join("fixup.md"),
+            "---\nname: fixup\ndescription: amend last commit\n---\nbody text\n",
+        )
+        .unwrap();
+        let out = list_commands(&dir).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "fixup");
+        assert_eq!(out[0].description, "amend last commit");
+    }
+
+    #[test]
+    fn scan_missing_dir_is_empty_not_error() {
+        let out = list_commands(std::path::Path::new("no-such-root")).unwrap();
+        assert!(out.is_empty());
+    }
 }
