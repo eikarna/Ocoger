@@ -47,6 +47,8 @@ pub enum Mode {
     Process,
     /// Phase 5.7: Settings pane — theme, default_agent, autoupdate, share.
     Settings,
+    /// Providers edit-input modal (Enter commits CST write).
+    ProviderEdit,
 }
 
 /// Event-loop async actions the pure `update()` cannot perform itself (spawn/
@@ -159,6 +161,17 @@ pub enum Action {
     /// Settings pane: start inline edit of string value at cursor.
     SettingsEditStart,
     SettingsEditCommit,
+    /// Providers pane: cycle edit-subfield on highlighted provider.
+    ProviderEditStart(&'static str),
+    ProviderEditCommit,
+    /// Providers pane: delete highlighted provider via CST.
+    ProviderDelete,
+    /// Commands pane: open name-entry modal ("new command").
+    CommandNewStart,
+    /// Commands pane: create file + refresh list.
+    CommandCreate,
+    /// Commands pane: delete highlighted file.
+    CommandDelete,
     /// MCP pane: toggle `enabled` on the highlighted server.
     McpToggle,
     /// MCP pane: flip `type` between local/remote on the highlighted server.
@@ -265,6 +278,10 @@ pub struct App {
     /// Phase 5.7: settings rows — known top-level keys alongside current value.
     pub settings_rows: Vec<crate::core::settings::SettingsRow>,
     pub settings_cursor: usize,
+    /// Modal-like staging for Providers edit (field index + buffer).
+    providers_edit_field: Option<Vec<String>>,
+    /// Pending command name inside CommandNewStart flow (held in modal_input).
+    pub pending_command_name: Option<String>,
 }
 
 /// Phase 5 hub items. Index ↔ `mainmenu_cursor`. Binary digit keys (1..6)
@@ -383,6 +400,8 @@ impl App {
                 .map(|v| crate::core::settings::scan(v))
                 .unwrap_or_default(),
             settings_cursor: 0,
+            providers_edit_field: None,
+            pending_command_name: None,
         };
         // Best-effort: load presets on boot; errors land in the log but never
         // block the UI (a corrupt presets file shouldn't break agent editing).
@@ -598,7 +617,10 @@ impl App {
                         };
                     }
                 }
-                Mode::PresetNameNew | Mode::PresetConfirmAll | Mode::GlobalEditPrompt => {}
+                Mode::PresetNameNew
+                | Mode::PresetConfirmAll
+                | Mode::GlobalEditPrompt
+                | Mode::ProviderEdit => {}
                 Mode::Commands => {
                     let n = self.commands.len();
                     if n > 0 {
@@ -835,7 +857,11 @@ impl App {
                     self.modal_input.clear();
                     self.pending_preset = None;
                     self.modal_focus = ModalFocus::Input;
-                    self.mode = Mode::List;
+                    if self.pending_command_name.take().is_some() {
+                        self.mode = Mode::Commands;
+                    } else {
+                        self.mode = Mode::List;
+                    }
                 }
             }
             OpenPresets => {
@@ -892,9 +918,17 @@ impl App {
             }
             PresetSaveNew => {
                 if self.mode == Mode::PresetNameNew {
-                    self.capture_selected_as_preset();
-                    self.modal_input.clear();
-                    self.mode = Mode::Preset;
+                    // Disambiguate between "n" from the Preset picker (capture
+                    // selection) and "n" from Commands pane (create file). The
+                    // latter holds `pending_command_name`, so fork here.
+                    if self.pending_command_name.is_some() {
+                        self.command_create_from_modal();
+                        // command_create sets Mode::Commands; don't overwrite
+                    } else {
+                        self.capture_selected_as_preset();
+                        self.modal_input.clear();
+                        self.mode = Mode::Preset;
+                    }
                 }
             }
             PresetDelete => {
@@ -1056,6 +1090,39 @@ impl App {
                         self.settings_edit_commit(&s);
                     }
                     self.modal_input.clear();
+                }
+            }
+            ProviderEditStart(field) => {
+                if self.mode == Mode::Providers {
+                    self.providers_edit_start(field);
+                }
+            }
+            ProviderEditCommit => {
+                if self.mode == Mode::ProviderEdit {
+                    self.providers_edit_commit();
+                }
+            }
+            ProviderDelete => {
+                if self.mode == Mode::Providers {
+                    self.providers_delete_current();
+                }
+            }
+            CommandNewStart => {
+                if self.mode == Mode::Commands {
+                    self.modal_input.clear();
+                    self.mode = Mode::PresetNameNew; // reuse name-entry modal
+                                                     // Note: PresetNameNew accepts will save as command below via branch.
+                    self.pending_command_name = Some(String::new());
+                }
+            }
+            CommandCreate => {
+                if self.mode == Mode::PresetNameNew && self.pending_command_name.is_some() {
+                    self.command_create_from_modal();
+                }
+            }
+            CommandDelete => {
+                if self.mode == Mode::Commands {
+                    self.command_delete_current();
                 }
             }
             Quit => {
@@ -1467,6 +1534,136 @@ impl App {
                     .collect();
                 self.perm_rows = crate::core::permissions::scan(&v, &agent_names);
             }
+        }
+    }
+
+    // --- Providers (5.3) edit/delete helpers ---------------------------------------
+
+    /// Stage an edit on the highlighted provider: swap into the shared
+    /// GlobalEditPrompt input shell so the user can type the new value.
+    fn providers_edit_start(&mut self, field: &'static str) {
+        let Some(p) = self.providers_list.get(self.providers_cursor).cloned() else {
+            return;
+        };
+        let seg: Vec<&str> = field.split('.').collect();
+        let mut path: Vec<String> = vec!["provider".to_string(), p.id];
+        for s in seg {
+            path.push(s.to_string());
+        }
+        self.providers_edit_field = Some(path);
+        self.modal_input.clear();
+        self.mode = Mode::ProviderEdit;
+        self.log(format!(
+            "type new value for {} — Enter commits, Esc cancels",
+            field
+        ));
+    }
+
+    /// Enter on the providers-input modal: CST write + refresh list.
+    fn providers_edit_commit(&mut self) {
+        let Some(path) = self.providers_edit_field.take() else {
+            self.mode = Mode::Providers;
+            return;
+        };
+        let value = self.modal_input.trim().to_string();
+        let Some(cfg) = self.config.as_mut() else {
+            self.mode = Mode::Providers;
+            return;
+        };
+        if cfg.set_nested_str(&path, &value).is_ok() {
+            let _ = cfg.save();
+            self.providers_refresh();
+            self.log(format!("provider.{} updated", path[1..].join(".")));
+        }
+        let _ = value;
+        self.modal_input.clear();
+        self.mode = Mode::Providers;
+    }
+
+    fn providers_delete_current(&mut self) {
+        let Some(p) = self.providers_list.get(self.providers_cursor).cloned() else {
+            return;
+        };
+        let Some(cfg) = self.config.as_mut() else {
+            return;
+        };
+        if cfg.remove_nested(["provider", &p.id]).is_ok() {
+            let _ = cfg.save();
+            self.providers_list.remove(self.providers_cursor);
+            if self.providers_cursor > 0 {
+                self.providers_cursor -= 1;
+            }
+            self.log(format!("provider '{}' removed", p.id));
+        }
+    }
+
+    fn providers_refresh(&mut self) {
+        if let Some(cfg) = self.config.as_ref() {
+            if let Ok(v) = cfg.value() {
+                self.providers_list =
+                    crate::core::providers::ProviderInfo::scan_providers(&v).unwrap_or_default();
+            }
+        }
+    }
+
+    // --- Commands (5.2) create/delete -------------------------------------------------
+
+    fn command_create_from_modal(&mut self) {
+        let name = self.modal_input.trim().to_string();
+        if name.is_empty() {
+            self.log("empty command name; aborting".to_string());
+            self.mode = Mode::Commands;
+            self.pending_command_name = None;
+            return;
+        }
+        let tmp = crate::core::commands::Command {
+            name: name.clone(),
+            description: "created via TUI".to_string(),
+        };
+        let body = format!("{}\n\n", tmp.serialize());
+        let path = self
+            .project_root
+            .join(".opencode")
+            .join("commands")
+            .join(format!("{name}.md"));
+        if let Err(e) = crate::core::fs_util::atomic_write(&path, &body) {
+            self.log(format!("command create failed: {e}"));
+        } else {
+            self.log(format!("command '{name}' created"));
+            if let Ok(cs) = crate::core::commands::list_commands(&self.project_root) {
+                self.commands = cs;
+                self.commands_cursor = self
+                    .commands
+                    .iter()
+                    .position(|c| c.name == name)
+                    .unwrap_or(0);
+            }
+        }
+        self.mode = Mode::Commands;
+        self.pending_command_name = None;
+        self.modal_input.clear();
+    }
+
+    fn command_delete_current(&mut self) {
+        let Some(c) = self.commands.get(self.commands_cursor).cloned() else {
+            return;
+        };
+        let path = self
+            .project_root
+            .join(".opencode")
+            .join("commands")
+            .join(format!("{}.md", c.name));
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                self.log(format!("command '{}' removed", c.name));
+                if let Ok(cs) = crate::core::commands::list_commands(&self.project_root) {
+                    self.commands = cs;
+                    if self.commands_cursor > 0 {
+                        self.commands_cursor -= 1;
+                    }
+                }
+            }
+            Err(e) => self.log(format!("command delete failed: {e}")),
         }
     }
 

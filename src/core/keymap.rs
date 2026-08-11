@@ -224,7 +224,14 @@ impl Keymap {
         t.insert(def(Esc, false, false, false), Action::GlobalEditNo);
         m.insert(Mode::GlobalEditPrompt, t);
 
-        // ----- Commands / Providers / Permissions / MCP / Process leaf panes -----
+        // ----- Providers edit: char input + Enter commit / Esc cancel -----
+        let mut t = HashMap::new();
+        t.insert(def(Enter, false, false, false), Action::ProviderEditCommit);
+        t.insert(def(Esc, false, false, false), Action::CancelModal);
+        t.insert(def(Backspace, false, false, false), Action::ModalBackspace);
+        m.insert(Mode::ProviderEdit, t);
+
+        // ----- Commands / Providers / Permissions / MCP / Process / Settings leaf panes -----
         for mode in [
             Mode::Commands,
             Mode::Providers,
@@ -252,6 +259,21 @@ impl Keymap {
                         def(Char('e'), false, false, false),
                         Action::PermCycleAgent(0),
                     );
+                }
+                Mode::Providers => {
+                    t.insert(
+                        def(Char('e'), false, false, false),
+                        Action::ProviderEditStart("options.baseURL"),
+                    );
+                    t.insert(
+                        def(Char('k'), false, false, false),
+                        Action::ProviderEditStart("options.apiKey"),
+                    );
+                    t.insert(def(Char('d'), false, false, false), Action::ProviderDelete);
+                }
+                Mode::Commands => {
+                    t.insert(def(Char('n'), false, false, false), Action::CommandNewStart);
+                    t.insert(def(Char('d'), false, false, false), Action::CommandDelete);
                 }
                 Mode::Process => {
                     t.insert(def(Char('s'), false, false, false), Action::ProcessStart);
@@ -365,6 +387,7 @@ fn parse_mode(s: &str) -> Option<Mode> {
         "global_edit_prompt" => Some(Mode::GlobalEditPrompt),
         "commands" => Some(Mode::Commands),
         "providers" => Some(Mode::Providers),
+        "providers_edit" => Some(Mode::ProviderEdit),
         "mcp" => Some(Mode::Mcp),
         "permissions" | "perms" => Some(Mode::Permissions),
         "process" => Some(Mode::Process),
