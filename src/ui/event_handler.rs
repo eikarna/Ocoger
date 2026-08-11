@@ -18,7 +18,7 @@ use crate::services::process_manager::ProcessManager;
 use crate::ui::app::{Action, App, Mode};
 use crate::ui::widgets::{
     agent_list, commands, diff_view, form, mainmenu, mcp, permissions, picker, preset_picker,
-    providers,
+    process, providers,
 };
 
 /// Run the TUI until the user quits. Restores the terminal on all exits.
@@ -55,8 +55,16 @@ async fn event_loop(
     let mut last_proc_state = proc_mgr.state;
     loop {
         app.sync_catalog_from_shared();
+        app.proc_state = proc_mgr.state;
+        app.proc_pid = proc_mgr.pid;
         for (stream, line) in proc_mgr.drain_output() {
-            app.log_push(format!("[{stream}] {line}"));
+            let tagged = format!("[{stream}] {line}");
+            app.log_push(tagged.clone());
+            app.process_buf.push(tagged);
+            if app.process_buf.len() > 500 {
+                let drop = app.process_buf.len() - 500;
+                app.process_buf.drain(..drop);
+            }
         }
         if proc_mgr.state != last_proc_state {
             app.log_push(format!(
@@ -157,7 +165,7 @@ async fn event_loop(
                 Mode::Providers => providers::render(f, chunks[1], app),
                 Mode::Mcp => mcp::render(f, chunks[1], app),
                 Mode::Permissions => permissions::render(f, chunks[1], app),
-                Mode::Process => mainmenu::render(f, chunks[1], app), // Phase 5.6 placeholder: reuse hub render
+                Mode::Process => process::render(f, chunks[1], app),
                 Mode::GlobalEditPrompt => {
                     form::render(f, chunks[1], app);
                     // Rendered as a simple modal paragraph on top of the form.
@@ -290,9 +298,25 @@ async fn maybe_restart(proc_mgr: &mut ProcessManager, app: &mut App, action: Act
     }
     let want_restart = match action {
         Restart => true,
+        Action::ProcessRestart => true,
         // App::update(Save) already saved dirty agents; `log_has_recent_save`
         // reports whether that save actually wrote files (restart trigger).
         Save => app.log_has_recent_save(),
+        Action::ProcessStart => {
+            let cwd = app.project_root.clone();
+            match proc_mgr.spawn(&cwd).await {
+                Ok(pid) => app.log_push(format!("process spawned pid={pid}")),
+                Err(e) => app.log_push(format!("spawn failed: {e}")),
+            }
+            return;
+        }
+        Action::ProcessKill => {
+            match proc_mgr.kill().await {
+                Ok(pid) => app.log_push(format!("process killed pid={pid}")),
+                Err(e) => app.log_push(format!("kill failed: {e}")),
+            }
+            return;
+        }
         _ => return,
     };
     if !want_restart {

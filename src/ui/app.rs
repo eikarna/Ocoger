@@ -146,6 +146,12 @@ pub enum Action {
     MainMenuJump(usize),
     /// Esc on a leaf pane: return to MainMenu.
     BackToMenu,
+    /// Process pane: scroll the buffered tail up/down.
+    ProcessScroll(i32),
+    /// Process pane: request lifecycle action (handled async by the loop).
+    ProcessStart,
+    ProcessKill,
+    ProcessRestart,
     /// MCP pane: toggle `enabled` on the highlighted server.
     McpToggle,
     /// MCP pane: flip `type` between local/remote on the highlighted server.
@@ -244,6 +250,11 @@ pub struct App {
     /// Phase 5.5: permission tuples — global + per-agent override values.
     pub perm_rows: Vec<crate::core::permissions::PermRow>,
     pub perm_cursor: usize,
+    /// Phase 5.6: process & logs — buffered tail lines + lifecycle status.
+    pub process_buf: Vec<String>,
+    pub proc_state: crate::services::process_manager::ProcState,
+    pub proc_pid: Option<u32>,
+    pub proc_scroll: u16,
 }
 
 /// Phase 5 hub items. Index ↔ `mainmenu_cursor`. Binary digit keys (1..6)
@@ -352,6 +363,10 @@ impl App {
             mcp_cursor: 0,
             perm_rows,
             perm_cursor: 0,
+            process_buf: Vec::new(),
+            proc_state: crate::services::process_manager::ProcState::Idle,
+            proc_pid: None,
+            proc_scroll: 0,
         };
         // Best-effort: load presets on boot; errors land in the log but never
         // block the UI (a corrupt presets file shouldn't break agent editing).
@@ -984,6 +999,23 @@ impl App {
                     self.perm_cycle(Some(agent_idx));
                 }
             }
+            ProcessScroll(d) => {
+                if self.mode == Mode::Process {
+                    let max = self.process_buf.len().saturating_sub(1) as u16;
+                    self.proc_scroll = if d.is_negative() {
+                        self.proc_scroll.saturating_sub(d.unsigned_abs() as u16)
+                    } else {
+                        self.proc_scroll.saturating_add(d as u16).min(max)
+                    };
+                }
+            }
+            ProcessStart | ProcessKill | ProcessRestart => {
+                // Async side-effectful; event_loop performs and logs the result.
+                if let Some(line) = self.process_buf.last().cloned() {
+                    let _ = line;
+                }
+                self.log("process action requested (handled by event loop)".to_string());
+            }
             Quit => {
                 // Guard against data loss (BRD: don't destroy unsaved edits).
                 if self.dirty_count() == 0 {
@@ -1018,6 +1050,7 @@ impl App {
             2 => self.mode = Mode::Permissions,
             3 => self.mode = Mode::Mcp,
             4 => self.mode = Mode::Commands,
+            5 => self.mode = Mode::Process,
             i => {
                 let name = MAINMENU_ITEMS.get(i).map(|(n, _)| *n).unwrap_or("?");
                 self.log(format!("'{name}' pane not implemented yet (Phase 5)"));

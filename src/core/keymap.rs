@@ -224,8 +224,14 @@ impl Keymap {
         t.insert(def(Esc, false, false, false), Action::GlobalEditNo);
         m.insert(Mode::GlobalEditPrompt, t);
 
-        // ----- Commands / Providers (Phase 5 leaf panes, read-only lists) -----
-        for mode in [Mode::Commands, Mode::Providers] {
+        // ----- Commands / Providers / Permissions / MCP / Process leaf panes -----
+        for mode in [
+            Mode::Commands,
+            Mode::Providers,
+            Mode::Permissions,
+            Mode::Mcp,
+            Mode::Process,
+        ] {
             let mut t = HashMap::new();
             t.insert(def(Esc, false, false, false), Action::BackToMenu);
             t.insert(def(Char('q'), false, false, false), Action::BackToMenu);
@@ -233,6 +239,27 @@ impl Keymap {
             t.insert(def(Down, false, false, false), Action::MoveDown);
             t.insert(def(Char('k'), false, false, false), Action::MoveUp);
             t.insert(def(Up, false, false, false), Action::MoveUp);
+            match mode {
+                Mode::Mcp => {
+                    t.insert(def(Space, false, false, false), Action::McpToggle);
+                    t.insert(def(Char('t'), false, false, false), Action::McpToggleType);
+                    t.insert(def(Char('d'), false, false, false), Action::McpDelete);
+                    t.insert(def(Char('e'), false, false, false), Action::McpEditStart);
+                }
+                Mode::Permissions => {
+                    t.insert(def(Space, false, false, false), Action::PermCycle);
+                    t.insert(
+                        def(Char('e'), false, false, false),
+                        Action::PermCycleAgent(0),
+                    );
+                }
+                Mode::Process => {
+                    t.insert(def(Char('s'), false, false, false), Action::ProcessStart);
+                    t.insert(def(Char('k'), false, false, false), Action::ProcessKill);
+                    t.insert(def(Char('r'), false, false, false), Action::ProcessRestart);
+                }
+                _ => {}
+            }
             m.insert(mode, t);
         }
 
@@ -330,6 +357,9 @@ fn parse_mode(s: &str) -> Option<Mode> {
         "global_edit_prompt" => Some(Mode::GlobalEditPrompt),
         "commands" => Some(Mode::Commands),
         "providers" => Some(Mode::Providers),
+        "mcp" => Some(Mode::Mcp),
+        "permissions" | "perms" => Some(Mode::Permissions),
+        "process" => Some(Mode::Process),
         _ => None,
     }
 }
