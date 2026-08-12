@@ -264,11 +264,16 @@ impl JsoncConfig {
             });
         };
         push("model", v.get("model").and_then(Value::as_str), &["model"]);
+        push(
+            "small_model",
+            v.get("small_model").and_then(Value::as_str),
+            &["small_model"],
+        );
         push("theme", v.get("theme").and_then(Value::as_str), &["theme"]);
         push(
-            "default_provider",
-            v.get("default_provider").and_then(Value::as_str),
-            &["default_provider"],
+            "default_agent",
+            v.get("default_agent").and_then(Value::as_str),
+            &["default_agent"],
         );
         let provider = v
             .get("provider")
@@ -276,17 +281,17 @@ impl JsoncConfig {
             .unwrap_or_else(|| Value::Object(Default::default()));
         if let Some(map) = provider.as_object() {
             for (name, cfg) in map {
-                let base_url = cfg.pointer("/options/baseURL").and_then(Value::as_str);
-                let api_key = cfg.get("api_key").and_then(Value::as_str);
+                // v1 schema nests both under `options`; `api_key` at the entry
+                // root was never valid and always read back empty.
                 push(
-                    &format!("provider.{name}.base_url"),
-                    base_url.or_else(|| cfg.pointer("/options/baseURL").and_then(Value::as_str)),
+                    &format!("provider.{name}.baseURL"),
+                    cfg.pointer("/options/baseURL").and_then(Value::as_str),
                     &["provider", name, "options", "baseURL"],
                 );
                 push(
-                    &format!("provider.{name}.api_key"),
-                    api_key,
-                    &["provider", name, "api_key"],
+                    &format!("provider.{name}.apiKey"),
+                    cfg.pointer("/options/apiKey").and_then(Value::as_str),
+                    &["provider", name, "options", "apiKey"],
                 );
             }
         }
@@ -368,7 +373,7 @@ mod tests {
   "model": "oclaude/claude-3-5",  // primary
   "theme": "dark",
   "provider": {
-    "openai": { "options": { "baseURL": "https://api.openai.com" }, "api_key": "sk-xxx" },
+    "openai": { "options": { "baseURL": "https://api.openai.com", "apiKey": "sk-xxx" } },
     "anthropic": { "options": { "baseURL": "https://api.anthropic.com" } },
   },
 }"#
@@ -379,15 +384,19 @@ mod tests {
         assert_eq!(get("model").value, "oclaude/claude-3-5");
         assert_eq!(get("theme").value, "dark");
         assert_eq!(
-            get("provider.openai.base_url").value,
+            get("provider.openai.baseURL").value,
             "https://api.openai.com"
         );
-        assert_eq!(get("provider.openai.api_key").value, "sk-xxx");
         assert_eq!(
-            get("provider.anthropic.base_url").value,
+            get("provider.openai.apiKey").value,
+            "sk-xxx",
+            "v1 schema nests apiKey under options"
+        );
+        assert_eq!(
+            get("provider.anthropic.baseURL").value,
             "https://api.anthropic.com"
         );
-        assert_eq!(get("provider.anthropic.api_key").value, "");
+        assert_eq!(get("provider.anthropic.apiKey").value, "");
     }
 
     #[test]

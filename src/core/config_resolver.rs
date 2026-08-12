@@ -500,7 +500,7 @@ mod tests {
         // Provider global key surfaced.
         assert!(items
             .iter()
-            .any(|i| i.label == "provider.acme.base_url·global" && i.value == "https://acme"));
+            .any(|i| i.label == "provider.acme.baseURL·global" && i.value == "https://acme"));
         std::env::remove_var("OCOGAR_GLOBAL_CONFIG_DIR");
     }
 }

@@ -76,14 +76,9 @@ const KNOWN: &[(&str, Kind, &str, &str)] = &[
         "",
         "short name or absolute path, e.g. pwsh",
     ),
-    // Deprecated in opencode.json (migrated to tui.json) but still honored, so
-    // it stays visible — hiding it would silently drop an existing value.
-    (
-        "theme",
-        Kind::Text,
-        "",
-        "deprecated here; tui.json owns this",
-    ),
+    // `theme` belongs in OpenCode's tui.json, not its v1 config schema.
+    // Ocoger's visual theme is stored separately under `.ocoger/`; never put
+    // it here or create an accidental project opencode.jsonc override.
 ];
 
 /// Render a scalar JSON value for display. Non-scalars collapse to "" so a

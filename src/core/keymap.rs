@@ -224,27 +224,12 @@ impl Keymap {
         t.insert(def(Esc, false, false, false), Action::GlobalEditNo);
         m.insert(Mode::GlobalEditPrompt, t);
 
-        // ----- Providers edit: char input + Enter commit / Esc cancel -----
+        // ----- Shared edit dialog: all panes use this one input/focus path -----
         let mut t = HashMap::new();
-        t.insert(def(Enter, false, false, false), Action::ProviderEditCommit);
+        t.insert(def(Enter, false, false, false), Action::EditCommit);
         t.insert(def(Esc, false, false, false), Action::CancelModal);
         t.insert(def(Backspace, false, false, false), Action::ModalBackspace);
-        m.insert(Mode::ProviderEdit, t);
-
-        // ----- Settings edit: char input + Enter commit / Esc cancel -----
-        let mut t = HashMap::new();
-        t.insert(def(Enter, false, false, false), Action::SettingsEditCommit);
-        t.insert(def(Esc, false, false, false), Action::CancelModal);
-        t.insert(def(Backspace, false, false, false), Action::ModalBackspace);
-        m.insert(Mode::SettingsEdit, t);
-
-        // ----- Settings edit + Provider edit can bail via Ctrl+C too -----
-        if let Some(tbl) = m.get_mut(&Mode::SettingsEdit) {
-            tbl.insert(def(Char('c'), true, false, false), Action::Quit);
-        }
-        if let Some(tbl) = m.get_mut(&Mode::ProviderEdit) {
-            tbl.insert(def(Char('c'), true, false, false), Action::Quit);
-        }
+        m.insert(Mode::EditPrompt, t);
 
         // ----- Commands / Providers / Permissions / MCP / Process / Settings leaf panes -----
         for mode in [
@@ -271,19 +256,21 @@ impl Keymap {
                 }
                 Mode::Permissions => {
                     t.insert(def(Space, false, false, false), Action::PermCycle);
+                    t.insert(def(Char('e'), false, false, false), Action::EditStart);
+                    t.insert(def(Char('n'), false, false, false), Action::PermPatternNew);
                     t.insert(
-                        def(Char('e'), false, false, false),
-                        Action::PermCycleAgent(0),
+                        def(Char('d'), false, false, false),
+                        Action::PermPatternDelete,
                     );
                 }
                 Mode::Providers => {
                     t.insert(
                         def(Char('e'), false, false, false),
-                        Action::ProviderEditStart("options.baseURL"),
+                        Action::ProviderEditOption("baseURL"),
                     );
                     t.insert(
                         def(Char('a'), false, false, false),
-                        Action::ProviderEditStart("options.apiKey"),
+                        Action::ProviderEditOption("apiKey"),
                     );
                     t.insert(def(Char('d'), false, false, false), Action::ProviderDelete);
                 }
@@ -299,12 +286,10 @@ impl Keymap {
                 }
                 Mode::Settings => {
                     t.insert(def(Space, false, false, false), Action::SettingsToggle);
-                    // Enter in Settings = open edit on the current row.
-                    t.insert(def(Enter, false, false, false), Action::SettingsEditStart);
-                    t.insert(
-                        def(Char('e'), false, false, false),
-                        Action::SettingsEditStart,
-                    );
+                    // Enter and e both open the shared dialog for text rows;
+                    // toggles cycle directly through their documented values.
+                    t.insert(def(Enter, false, false, false), Action::EditStart);
+                    t.insert(def(Char('e'), false, false, false), Action::EditStart);
                 }
                 _ => {}
             }
@@ -407,7 +392,6 @@ fn parse_mode(s: &str) -> Option<Mode> {
         "global_edit_prompt" => Some(Mode::GlobalEditPrompt),
         "commands" => Some(Mode::Commands),
         "providers" => Some(Mode::Providers),
-        "providers_edit" => Some(Mode::ProviderEdit),
         "mcp" => Some(Mode::Mcp),
         "permissions" | "perms" => Some(Mode::Permissions),
         "process" => Some(Mode::Process),

@@ -18,7 +18,7 @@ use crate::services::process_manager::ProcessManager;
 use crate::ui::app::{Action, App, Mode};
 use crate::ui::widgets::{
     agent_list, commands, diff_view, form, mainmenu, mcp, permissions, picker, preset_picker,
-    process, providers, settings,
+    process, providers, settings, util,
 };
 
 /// Run the TUI until the user quits. Restores the terminal on all exits.
@@ -116,9 +116,7 @@ async fn event_loop(
                 Mode::Preset => Style::default().fg(app.theme.syntax_keyword),
                 Mode::PresetNameNew => Style::default().fg(app.theme.warn),
                 Mode::PresetConfirmAll => Style::default().fg(app.theme.warn),
-                Mode::GlobalEditPrompt | Mode::ProviderEdit | Mode::SettingsEdit => {
-                    Style::default().fg(app.theme.warn)
-                }
+                Mode::GlobalEditPrompt | Mode::EditPrompt => Style::default().fg(app.theme.warn),
                 Mode::Commands
                 | Mode::Providers
                 | Mode::Mcp
@@ -180,34 +178,19 @@ async fn event_loop(
                 }
                 Mode::Commands => commands::render(f, chunks[1], app),
                 Mode::Providers => providers::render(f, chunks[1], app),
-                Mode::ProviderEdit => {
-                    providers::render(f, chunks[1], app);
-                    // Render the inline edit line as a bottom prompt bar.
-                    let bar = Line::from(vec![
-                        Span::styled("edit > ", Style::default().fg(app.theme.warn)),
-                        Span::raw(&app.modal_input),
-                    ]);
-                    f.render_widget(
-                        ratatui::widgets::Paragraph::new(bar),
-                        ratatui::layout::Rect::new(0, f.area().height - 1, f.area().width, 1),
-                    );
-                }
                 Mode::Mcp => mcp::render(f, chunks[1], app),
                 Mode::Permissions => permissions::render(f, chunks[1], app),
                 Mode::Process => process::render(f, chunks[1], app),
-                Mode::Settings | Mode::SettingsEdit => {
-                    settings::render(f, chunks[1], app);
-                    if app.mode == Mode::SettingsEdit {
-                        let bar = Line::from(vec![
-                            Span::styled("edit > ", Style::default().fg(app.theme.warn)),
-                            Span::raw(&app.modal_input),
-                        ]);
-                        f.render_widget(
-                            ratatui::widgets::Paragraph::new(bar),
-                            ratatui::layout::Rect::new(0, f.area().height - 1, f.area().width, 1),
-                        );
+                Mode::Settings => settings::render(f, chunks[1], app),
+                Mode::EditPrompt => {
+                    match app.edit_prompt.as_ref().map(|p| p.return_to) {
+                        Some(Mode::Providers) => providers::render(f, chunks[1], app),
+                        Some(Mode::Permissions) => permissions::render(f, chunks[1], app),
+                        _ => settings::render(f, chunks[1], app),
                     }
+                    util::edit_prompt(f, f.area(), app);
                 }
+
                 Mode::GlobalEditPrompt => {
                     form::render(f, chunks[1], app);
                     // Rendered as a simple modal paragraph on top of the form.
@@ -563,15 +546,15 @@ fn handle_key_via_keymap(app: &mut App, key: KeyEvent) -> Action {
             // Modal fallthroughs: these modes accept free-text input, so any
             // Char that isn't bound to an action still routes to the buffer.
             match (app.mode, key.code) {
-                (Mode::ModelEdit, KeyCode::Char(c)) => Action::ModalInput(c),
-                (Mode::ProviderEdit, KeyCode::Char(c)) => Action::ModalInput(c),
-                (Mode::SettingsEdit, KeyCode::Char(c)) => Action::ModalInput(c),
+                (Mode::ModelEdit, KeyCode::Char(c)) | (Mode::EditPrompt, KeyCode::Char(c)) => {
+                    Action::ModalInput(c)
+                }
                 (Mode::Picker, KeyCode::Char(c)) => Action::PickerInput(c),
                 (Mode::Preset, KeyCode::Char(c)) => Action::PresetInput(c),
                 (Mode::PresetNameNew, KeyCode::Char(c)) => Action::PresetInput(c),
-                (Mode::ModelEdit, KeyCode::Backspace) => Action::ModalBackspace,
-                (Mode::ProviderEdit, KeyCode::Backspace) => Action::ModalBackspace,
-                (Mode::SettingsEdit, KeyCode::Backspace) => Action::ModalBackspace,
+                (Mode::ModelEdit, KeyCode::Backspace) | (Mode::EditPrompt, KeyCode::Backspace) => {
+                    Action::ModalBackspace
+                }
                 (Mode::Picker, KeyCode::Backspace) => Action::PickerBackspace,
                 (Mode::Preset, KeyCode::Backspace) => Action::PresetBackspace,
                 (Mode::PresetNameNew, KeyCode::Backspace) => Action::PresetBackspace,
@@ -834,20 +817,34 @@ mod tests {
 
     /// The edit modals are keyboard-driven text fields: unbound printable
     /// chars must reach the buffer, or the modal looks broken (typing does
-    /// nothing). This regressed for ProviderEdit/SettingsEdit, which were
-    /// missing from the fallthrough table.
+    /// nothing). The shared EditPrompt uses the same fallthrough as ModelEdit.
     #[test]
     fn edit_modals_route_printable_chars_into_modal_input() {
-        for mode in [Mode::ModelEdit, Mode::ProviderEdit, Mode::SettingsEdit] {
-            let mut app = scratch_app();
-            app.mode = mode;
-            app.modal_input.clear();
-            for ch in "abc".chars() {
-                dispatch_key_if_press(&mut app, key(KeyCode::Char(ch), KeyEventKind::Press));
-            }
-            assert_eq!(app.modal_input, "abc", "{mode:?} must accept typed chars");
-            dispatch_key_if_press(&mut app, key(KeyCode::Backspace, KeyEventKind::Press));
-            assert_eq!(app.modal_input, "ab", "{mode:?} must accept Backspace");
+        // Legacy model editor writes to `modal_input`.
+        let mut app = scratch_app();
+        app.mode = Mode::ModelEdit;
+        for ch in "abc".chars() {
+            dispatch_key_if_press(&mut app, key(KeyCode::Char(ch), KeyEventKind::Press));
         }
+        assert_eq!(app.modal_input, "abc");
+        dispatch_key_if_press(&mut app, key(KeyCode::Backspace, KeyEventKind::Press));
+        assert_eq!(app.modal_input, "ab");
+
+        // The shared dialog owns a separate prompt buffer.
+        app.open_edit(
+            vec!["model".into()],
+            "setting",
+            "model id",
+            crate::ui::app::EditKind::Text,
+            String::new(),
+            crate::ui::app::EditTarget::Settings,
+            Mode::Settings,
+        );
+        for ch in "xyz".chars() {
+            dispatch_key_if_press(&mut app, key(KeyCode::Char(ch), KeyEventKind::Press));
+        }
+        assert_eq!(app.edit_prompt.as_ref().unwrap().buffer, "xyz");
+        dispatch_key_if_press(&mut app, key(KeyCode::Backspace, KeyEventKind::Press));
+        assert_eq!(app.edit_prompt.as_ref().unwrap().buffer, "xy");
     }
 }

@@ -1,6 +1,7 @@
 //! Two-band form: agent parameters (left) + global config (right).
 
 use crate::ui::app::{App, Panel};
+use crate::ui::widgets::util::fit;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -75,10 +76,15 @@ fn format_row_at(app: &App, band: Panel, idx: usize, band_is_active: bool) -> Li
         val = format!("{val} (ro)");
     }
 
+    // Both form bands have a fixed width. Fit rather than spilling long model
+    // ids into the next panel — this was visible as `darkdarkdark`/URLs crossing
+    // the vertical border in the screenshot.
+    let label = fit(&label, 22);
+    let value_width = 28;
     ListItem::new(Line::from(vec![
-        Span::styled(format!(" {label:22}"), label_style),
+        Span::styled(format!(" {label}"), label_style),
         Span::styled(
-            val,
+            fit(&val, value_width),
             if highlighted {
                 Style::default().fg(t.accent).bg(t.highlight_bg)
             } else {

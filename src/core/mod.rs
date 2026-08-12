@@ -7,6 +7,7 @@ pub mod fs_util;
 pub mod jsonc_config;
 pub mod keymap;
 pub mod mcp;
+pub mod ocoger_state;
 pub mod permissions;
 pub mod presets;
 pub mod providers;

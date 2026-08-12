@@ -48,13 +48,27 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
                 Kind::Enum(_) => "enum",
                 Kind::Number => "num",
             };
+            // Fixed-width display-column fitting keeps long model ids from
+            // overprinting the type and hint columns (the screenshot bug).
+            let width = area.width.saturating_sub(8) as usize;
+            let key_w = (width / 5).clamp(14, 18);
+            let value_w = (width / 3).clamp(16, 36);
+            let kind_w = 12;
+            let hint_w = width.saturating_sub(key_w + value_w + kind_w);
             ListItem::new(Line::from(vec![
-                Span::raw(format!("{marker} {} ", i + 1)),
-                Span::styled(format!("{:16}", r.key), name_style),
-                Span::styled(format!("{:14}", shown), value_style),
-                Span::styled(format!("{:12}", kindtag), Style::default().fg(t.dim)),
+                Span::raw(format!("{marker} {:2} ", i + 1)),
+                Span::styled(crate::ui::widgets::util::fit(&r.key, key_w), name_style),
+                Span::styled(crate::ui::widgets::util::fit(&shown, value_w), value_style),
                 Span::styled(
-                    if selected { r.hint } else { "" },
+                    crate::ui::widgets::util::fit(kindtag, kind_w),
+                    Style::default().fg(t.dim),
+                ),
+                Span::styled(
+                    if selected {
+                        crate::ui::widgets::util::clip(r.hint, hint_w)
+                    } else {
+                        String::new()
+                    },
                     Style::default().fg(t.dim),
                 ),
             ]))

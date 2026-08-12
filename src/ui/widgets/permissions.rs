@@ -1,6 +1,7 @@
-//! Phase 5.5: Permissions pane — global permission.<tool> with per-agent overrides.
+//! Permission rows, including nested glob/command pattern rows.
 
 use crate::ui::app::App;
+use crate::ui::widgets::util::{clip, fit};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -9,47 +10,55 @@ use ratatui::Frame;
 
 pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     let t = &app.theme;
+    let usable = area.width.saturating_sub(8) as usize;
+    let label_w = (usable / 3).clamp(16, 30);
+    let value_w = (usable / 4).clamp(12, 22);
 
     let items: Vec<ListItem> = app
         .perm_rows
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let marker = if i == app.perm_cursor { "▌" } else { " " };
-            let name_style = if i == app.perm_cursor {
+            let selected = i == app.perm_cursor;
+            let marker = if selected { "▌" } else { " " };
+            let name_style = if selected {
                 Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+            } else if r.depth == 1 {
+                Style::default().fg(t.dim)
             } else {
                 Style::default().fg(t.fg)
             };
-            let global_style = match r.global.as_str() {
+            let shown = r.effective();
+            let value_style = match r.value.as_str() {
                 "allow" => Style::default().fg(t.accent),
                 "deny" => Style::default().fg(t.warn),
                 "ask" => Style::default().fg(t.syntax_keyword),
                 _ => Style::default().fg(t.dim),
             };
-            // Unset rows show the documented default, dimmed.
-            let shown = if r.global.is_empty() {
-                format!(
-                    "({})",
-                    crate::core::permissions::documented_default(&r.tool)
-                )
+            let mut label = if r.depth == 1 {
+                format!("  ↳ {}", r.label)
             } else {
-                r.global.clone()
+                r.label.clone()
             };
-            let mut spans = vec![
-                Span::raw(format!("{marker} {} ", i + 1)),
-                Span::styled(format!("{:20}", r.tool), name_style),
-                Span::raw(" "),
-                Span::styled(format!("{:14}", shown), global_style),
-                Span::raw(" "),
-            ];
-            for (agent, val) in &r.agent_overrides {
-                spans.push(Span::styled(
-                    format!("[{agent}:{val}] "),
-                    Style::default().fg(t.syntax_keyword),
-                ));
+            if let Some(agent) = &r.agent {
+                label = format!("{agent}: {label}");
             }
-            ListItem::new(Line::from(spans))
+            let suffix = if r.is_container() {
+                format!("{} rules; [n] add", r.pattern_count)
+            } else if r.depth == 1 {
+                "[e] edit  [d] delete".to_string()
+            } else {
+                "[Space] cycle  [e] edit".to_string()
+            };
+            ListItem::new(Line::from(vec![
+                Span::raw(format!("{marker} {:2} ", i + 1)),
+                Span::styled(fit(&label, label_w), name_style),
+                Span::styled(fit(&shown, value_w), value_style),
+                Span::styled(
+                    clip(&suffix, usable.saturating_sub(label_w + value_w)),
+                    Style::default().fg(t.dim),
+                ),
+            ]))
         })
         .collect();
 
@@ -57,19 +66,19 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Min(1)])
         .split(area);
-
     let mut state = ListState::default();
     state.select(Some(app.perm_cursor));
     frame.render_stateful_widget(List::new(items), chunks[1], &mut state);
-
-    let hint = "[j/k] nav  [Space] allow/ask/deny  [e] agent override  [Esc] back";
     let header = Line::from(vec![
         Span::styled(
             format!(" {:3} ", app.perm_rows.len()),
             Style::default().fg(t.dim),
         ),
         Span::raw("Permissions "),
-        Span::styled(format!("  {hint}"), Style::default().fg(t.dim)),
+        Span::styled(
+            "[j/k] nav  [Space] cycle  [e] edit  [n] pattern  [d] delete  [Esc] back",
+            Style::default().fg(t.dim),
+        ),
     ]);
     frame.render_widget(Paragraph::new(header), chunks[0]);
 }

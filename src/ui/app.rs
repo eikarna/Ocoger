@@ -47,10 +47,103 @@ pub enum Mode {
     Process,
     /// Phase 5.7: Settings pane — theme, default_agent, autoupdate, share.
     Settings,
-    /// Providers edit-input modal (Enter commits CST write).
-    ProviderEdit,
-    /// Settings edit-input modal (Enter commits CST write, bools cycle).
-    SettingsEdit,
+    /// The one shared value-edit dialog (Settings / Providers / Permissions).
+    /// State lives in `App::edit_prompt`; Enter commits, Esc cancels.
+    EditPrompt,
+}
+
+/// What kind of value an [`EditPrompt`] is collecting. Drives validation and
+/// the "allowed:" line in the dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditKind {
+    Text,
+    Bool,
+    BoolOrNotify,
+    Enum(&'static [&'static str]),
+    Number,
+}
+
+impl From<crate::core::settings::Kind> for EditKind {
+    fn from(k: crate::core::settings::Kind) -> Self {
+        use crate::core::settings::Kind as K;
+        match k {
+            K::Text => Self::Text,
+            K::Bool => Self::Bool,
+            K::BoolOrNotify => Self::BoolOrNotify,
+            K::Enum(v) => Self::Enum(v),
+            K::Number => Self::Number,
+        }
+    }
+}
+
+/// Which pane opened the dialog, so the commit path knows what to refresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditTarget {
+    Settings,
+    Provider,
+    Permission,
+    /// Collecting a new `permission.<tool>.<pattern>` key rather than a value;
+    /// commit re-opens the dialog to collect that pattern's verdict.
+    PermissionNewPattern,
+}
+
+/// One reusable "change this value" dialog. Every pane routes through this
+/// instead of growing its own modal + keymap + input plumbing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditPrompt {
+    /// Full CST keypath being written, shown verbatim in the dialog title area.
+    pub keypath: Vec<String>,
+    /// Short label for the window title, e.g. "setting" / "permission".
+    pub title: String,
+    pub hint: &'static str,
+    pub kind: EditKind,
+    /// Existing value displayed as reference; the input buffer starts empty so
+    /// typing replaces rather than accidentally appending (`darkdarkdark`).
+    pub current: String,
+    pub buffer: String,
+    pub target: EditTarget,
+    /// Mode to return to on commit/cancel.
+    pub return_to: Mode,
+}
+
+impl EditPrompt {
+    /// Validate the buffer against `kind`. `Err` carries a user-facing reason.
+    pub fn validate(&self) -> Result<(), String> {
+        let v = self.buffer.trim();
+        match self.kind {
+            EditKind::Text => Ok(()),
+            EditKind::Bool => (v == "true" || v == "false")
+                .then_some(())
+                .ok_or_else(|| "expected true or false".to_string()),
+            EditKind::BoolOrNotify => (v == "true" || v == "false" || v == "notify")
+                .then_some(())
+                .ok_or_else(|| "expected true, false or notify".to_string()),
+            EditKind::Enum(vals) => vals
+                .contains(&v)
+                .then_some(())
+                .ok_or_else(|| format!("expected one of: {}", vals.join(", "))),
+            EditKind::Number => v
+                .parse::<i64>()
+                .map(|_| ())
+                .map_err(|_| "expected an integer".to_string()),
+        }
+    }
+
+    /// Typed CST value for the validated buffer.
+    pub fn cst_value(&self) -> jsonc_parser::cst::CstInputValue {
+        use jsonc_parser::cst::CstInputValue as V;
+        let v = self.buffer.trim();
+        match self.kind {
+            EditKind::Bool => V::Bool(v == "true"),
+            EditKind::BoolOrNotify => match v {
+                "true" => V::Bool(true),
+                "false" => V::Bool(false),
+                other => V::String(other.to_owned()),
+            },
+            EditKind::Number => V::Number(v.to_owned()),
+            EditKind::Text | EditKind::Enum(_) => V::String(v.to_owned()),
+        }
+    }
 }
 
 /// Event-loop async actions the pure `update()` cannot perform itself (spawn/
@@ -160,14 +253,18 @@ pub enum Action {
     ProcessRestart,
     /// Settings pane: cycle boolean value at cursor (bool keys only).
     SettingsToggle,
-    /// Settings pane: start inline edit of string value at cursor.
-    SettingsEditStart,
-    SettingsEditCommit,
-    /// Providers pane: cycle edit-subfield on highlighted provider.
-    ProviderEditStart(&'static str),
-    ProviderEditCommit,
+    /// Open the shared edit dialog on the highlighted row of the active pane.
+    EditStart,
+    /// Providers pane: edit a specific documented v1 option.
+    ProviderEditOption(&'static str),
+    /// Commit the shared edit dialog.
+    EditCommit,
     /// Providers pane: delete highlighted provider via CST.
     ProviderDelete,
+    /// Permissions pane: add a new pattern rule under the highlighted tool.
+    PermPatternNew,
+    /// Permissions pane: delete the highlighted pattern rule.
+    PermPatternDelete,
     /// Commands pane: open name-entry modal ("new command").
     CommandNewStart,
     /// Commands pane: create file + refresh list.
@@ -184,10 +281,8 @@ pub enum Action {
     McpEditStart,
     /// MCP pane: commit the inline edit buffer.
     McpEditCommit,
-    /// Permissions pane: cycle global value at cursor ask->allow->deny->ask.
+    /// Permissions pane: cycle the verdict on the highlighted row.
     PermCycle,
-    /// Permissions pane: cycle per-agent override value at cursor.
-    PermCycleAgent(usize),
     Quit,
     Noop,
 }
@@ -270,7 +365,8 @@ pub struct App {
     pub mcp_list: Vec<crate::core::mcp::McpEntry>,
     pub mcp_cursor: usize,
     /// Phase 5.5: permission tuples — global + per-agent override values.
-    pub perm_rows: Vec<crate::core::permissions::PermRow>,
+    /// Phase 5.5: permission rows — global + per-agent, tools + pattern rules.
+    pub perm_rows: Vec<crate::core::permissions::PermEntry>,
     pub perm_cursor: usize,
     /// Phase 5.6: process & logs — buffered tail lines + lifecycle status.
     pub process_buf: Vec<String>,
@@ -280,8 +376,8 @@ pub struct App {
     /// Phase 5.7: settings rows — known top-level keys alongside current value.
     pub settings_rows: Vec<crate::core::settings::SettingsRow>,
     pub settings_cursor: usize,
-    /// Modal-like staging for Providers edit (field index + buffer).
-    providers_edit_field: Option<Vec<String>>,
+    /// The single active value-edit dialog, shared by every pane.
+    pub edit_prompt: Option<EditPrompt>,
     /// Pending command name inside CommandNewStart flow (held in modal_input).
     pub pending_command_name: Option<String>,
 }
@@ -410,7 +506,7 @@ impl App {
                 .map(|v| crate::core::settings::scan(v))
                 .unwrap_or_default(),
             settings_cursor: 0,
-            providers_edit_field: None,
+            edit_prompt: None,
             pending_command_name: None,
         };
         // Best-effort: load presets on boot; errors land in the log but never
@@ -426,29 +522,26 @@ impl App {
         for w in km_warnings {
             app.log(w);
         }
-        // Theme: `theme` key from merged config; custom TOMLs under
-        // .ocoger/themes/ take precedence over builtins of the same name.
-        if let Some(cfg) = app.config.as_ref() {
-            if let Ok(Some(name)) = cfg
-                .value()
-                .map(|v| v.get("theme").and_then(|t| t.as_str()).map(str::to_owned))
+        // Ocoger's visual theme is deliberately separate from OpenCode's
+        // `opencode.json(c)`: that key belongs to OpenCode's tui.json and using
+        // it here created project config files just to retain app cosmetics.
+        // Project-local Ocoger state lives under `.ocoger/` only.
+        let themes_dir = app.project_root.join(".ocoger").join("themes");
+        let (custom, twarn) = crate::ui::theme::load_custom_from(&themes_dir);
+        for w in twarn {
+            app.log(format!("[theme] {w}"));
+        }
+        if let Some(name) = crate::core::ocoger_state::load_theme_name(&app.project_root) {
+            if let Some(t) = custom
+                .get(&name)
+                .copied()
+                .or_else(|| crate::ui::theme::by_name(&name))
             {
-                let themes_dir = app.project_root.join(".ocoger").join("themes");
-                let (custom, twarn) = crate::ui::theme::load_custom_from(&themes_dir);
-                for w in twarn {
-                    app.log(format!("[theme] {w}"));
-                }
-                if let Some(t) = custom
-                    .get(&name)
-                    .copied()
-                    .or_else(|| crate::ui::theme::by_name(&name))
-                {
-                    app.theme = t;
-                } else {
-                    app.log(format!(
-                        "[theme] unknown '{name}'; using default (opencode)"
-                    ));
-                }
+                app.theme = t;
+            } else {
+                app.log(format!(
+                    "[theme] unknown '{name}'; using default (opencode)"
+                ));
             }
         }
         app.spawn_catalog_fetch();
@@ -631,8 +724,7 @@ impl App {
                 Mode::PresetNameNew
                 | Mode::PresetConfirmAll
                 | Mode::GlobalEditPrompt
-                | Mode::ProviderEdit
-                | Mode::SettingsEdit => {}
+                | Mode::EditPrompt => {}
                 Mode::Commands => {
                     let n = self.commands.len();
                     if n > 0 {
@@ -730,19 +822,17 @@ impl App {
                 }
             }
             ModalInput(c) => {
-                if matches!(
-                    self.mode,
-                    Mode::ModelEdit | Mode::ProviderEdit | Mode::SettingsEdit
-                ) {
+                if self.mode == Mode::ModelEdit {
                     self.modal_input.push(c);
+                } else if let Some(prompt) = self.edit_prompt.as_mut() {
+                    prompt.buffer.push(c);
                 }
             }
             ModalBackspace => {
-                if matches!(
-                    self.mode,
-                    Mode::ModelEdit | Mode::ProviderEdit | Mode::SettingsEdit
-                ) {
+                if self.mode == Mode::ModelEdit {
                     self.modal_input.pop();
+                } else if let Some(prompt) = self.edit_prompt.as_mut() {
+                    prompt.buffer.pop();
                 }
             }
             ApplyModelModal => {
@@ -863,31 +953,27 @@ impl App {
                 }
             }
             CancelModal => {
+                if self.mode == Mode::EditPrompt {
+                    if let Some(prompt) = self.edit_prompt.take() {
+                        self.mode = prompt.return_to;
+                    }
                 // Discard staged input for ModelEdit / Picker / Preset* modes.
-                if matches!(
+                } else if matches!(
                     self.mode,
                     Mode::ModelEdit
                         | Mode::Picker
                         | Mode::Preset
                         | Mode::PresetNameNew
                         | Mode::PresetConfirmAll
-                        | Mode::ProviderEdit
-                        | Mode::SettingsEdit
                 ) {
-                    // SettingsEdit cancel returns to Settings (mode marker, not row present).
-                    let return_to_settings = self.mode == Mode::SettingsEdit;
                     self.modal_input.clear();
                     self.pending_preset = None;
                     self.modal_focus = ModalFocus::Input;
-                    if self.pending_command_name.take().is_some() {
-                        self.mode = Mode::Commands;
-                    } else if self.providers_edit_field.is_some() {
-                        self.mode = Mode::Providers;
-                    } else if return_to_settings {
-                        self.mode = Mode::Settings;
+                    self.mode = if self.pending_command_name.take().is_some() {
+                        Mode::Commands
                     } else {
-                        self.mode = Mode::List;
-                    }
+                        Mode::List
+                    };
                 }
             }
             OpenPresets => {
@@ -1073,12 +1159,17 @@ impl App {
             }
             PermCycle => {
                 if self.mode == Mode::Permissions {
-                    self.perm_cycle(None);
+                    self.perm_cycle_current();
                 }
             }
-            PermCycleAgent(agent_idx) => {
+            PermPatternNew => {
                 if self.mode == Mode::Permissions {
-                    self.perm_cycle(Some(agent_idx));
+                    self.perm_pattern_new_start();
+                }
+            }
+            PermPatternDelete => {
+                if self.mode == Mode::Permissions {
+                    self.perm_pattern_delete();
                 }
             }
             ProcessScroll(d) => {
@@ -1103,29 +1194,19 @@ impl App {
                     self.settings_toggle_current();
                 }
             }
-            SettingsEditStart => {
-                if self.mode == Mode::Settings {
-                    self.settings_edit_current();
-                }
-            }
-            SettingsEditCommit => {
-                if self.mode == Mode::SettingsEdit {
-                    let s = self.modal_input.trim().to_string();
-                    if !s.is_empty() {
-                        self.settings_edit_commit(&s);
-                    }
-                    self.modal_input.clear();
-                    self.mode = Mode::Settings;
-                }
-            }
-            ProviderEditStart(field) => {
+            EditStart => match self.mode {
+                Mode::Settings => self.settings_edit_current(),
+                Mode::Permissions => self.perm_edit_current(),
+                _ => {}
+            },
+            ProviderEditOption(option) => {
                 if self.mode == Mode::Providers {
-                    self.providers_edit_start(field);
+                    self.providers_edit_option(option);
                 }
             }
-            ProviderEditCommit => {
-                if self.mode == Mode::ProviderEdit {
-                    self.providers_edit_commit();
+            EditCommit => {
+                if self.mode == Mode::EditPrompt {
+                    self.edit_commit();
                 }
             }
             ProviderDelete => {
@@ -1426,17 +1507,102 @@ impl App {
             self.settings_toggle_current();
             return;
         }
-        self.modal_input = row.value.clone();
-        self.mode = Mode::SettingsEdit;
-        self.log(format!(
-            "{}: {} — Enter commits, Esc cancels",
-            row.key, row.hint
-        ));
+        self.open_edit(
+            vec![row.key.clone()],
+            "setting",
+            row.hint,
+            row.kind.into(),
+            row.value,
+            EditTarget::Settings,
+            Mode::Settings,
+        );
     }
 
-    fn settings_edit_commit(&mut self, value: &str) {
-        self.settings_write(value);
-        self.settings_refresh();
+    /// Open the single shared dialog and move keyboard focus to it.
+    pub(crate) fn open_edit(
+        &mut self,
+        keypath: Vec<String>,
+        title: impl Into<String>,
+        hint: &'static str,
+        kind: EditKind,
+        buffer: String,
+        target: EditTarget,
+        return_to: Mode,
+    ) {
+        self.edit_prompt = Some(EditPrompt {
+            keypath,
+            title: title.into(),
+            hint,
+            kind,
+            current: buffer,
+            buffer: String::new(),
+            target,
+            return_to,
+        });
+        self.mode = Mode::EditPrompt;
+    }
+
+    /// Commit the shared dialog. Validation leaves focus in the dialog and
+    /// logs the reason; successful writes use the CST exact keypath.
+    fn edit_commit(&mut self) {
+        let Some(prompt) = self.edit_prompt.clone() else {
+            return;
+        };
+        if let Err(e) = prompt.validate() {
+            self.log(e);
+            return;
+        }
+        let value = prompt.buffer.trim().to_string();
+        if value.is_empty() {
+            self.log("enter a value or press Esc to cancel".to_string());
+            return;
+        }
+        // Adding a pattern is deliberately two-step: first collect the nested
+        // key, then focus a verdict-only dialog. Never write the pattern text
+        // over the parent tool object (that would destroy its rule table).
+        if prompt.target == EditTarget::PermissionNewPattern {
+            if value.is_empty() {
+                self.log("permission pattern cannot be empty".to_string());
+                return;
+            }
+            let mut keypath = prompt.keypath;
+            keypath.push(value);
+            self.edit_prompt = None;
+            self.open_edit(
+                keypath,
+                "permission pattern",
+                "OpenCode permission verdict",
+                EditKind::Enum(crate::core::permissions::VERDICTS),
+                "ask".to_string(),
+                EditTarget::Permission,
+                Mode::Permissions,
+            );
+            return;
+        }
+        let Some(cfg) = self.config.as_mut() else {
+            self.log("no writable config; cannot save".to_string());
+            return;
+        };
+        if let Err(e) = cfg.set_nested_value(&prompt.keypath, prompt.cst_value()) {
+            self.log(format!("write failed: {e}"));
+            return;
+        }
+        if let Err(e) = cfg.save() {
+            self.log(format!("save failed: {e}"));
+            return;
+        }
+        let target = prompt.target;
+        let return_to = prompt.return_to;
+        let key_label = prompt.keypath.join(".");
+        self.edit_prompt = None;
+        self.mode = return_to;
+        match target {
+            EditTarget::Settings => self.settings_refresh(),
+            EditTarget::Provider => self.providers_refresh(),
+            EditTarget::Permission => self.perm_refresh(),
+            EditTarget::PermissionNewPattern => unreachable!("handled before write"),
+        }
+        self.log(format!("{} = {}", key_label, value));
     }
 
     /// Effective config (project + global merged) for read-only pane refresh.
@@ -1517,53 +1683,89 @@ impl App {
 
     // --- Phase 5.5 (Permissions) helpers ----------------------------------------
 
-    fn perm_cycle(&mut self, agent_idx: Option<usize>) {
+    fn perm_cycle_current(&mut self) {
         let Some(row) = self.perm_rows.get(self.perm_cursor).cloned() else {
             return;
         };
-        let (keypath, cur, label): (Vec<String>, String, String) = match agent_idx {
-            None => (
-                vec!["permission".to_string(), row.tool.clone()],
-                row.global.clone(),
-                format!("permission.{}", row.tool),
-            ),
-            Some(i) => {
-                let Some(agent_name) = row.agent_overrides.keys().nth(i).cloned() else {
-                    return;
-                };
-                let cur = row
-                    .agent_overrides
-                    .get(&agent_name)
-                    .cloned()
-                    .unwrap_or_default();
-                (
-                    vec![
-                        "agent".to_string(),
-                        agent_name.clone(),
-                        "permission".to_string(),
-                        row.tool.clone(),
-                    ],
-                    cur,
-                    format!("agent.{}.permission.{}", agent_name, row.tool),
-                )
-            }
+        if row.is_container() {
+            self.log("pattern rules: select a child rule or press [n] to add one".to_string());
+            return;
+        }
+        let next = crate::core::permissions::next_value(&row.value);
+        let Some(cfg) = self.config.as_mut() else {
+            self.log("no writable config; cannot save".to_string());
+            return;
         };
-        let next = crate::core::permissions::next_value(&cur);
-        // A glob table (`"bash": { "rm *": "deny", ... }`) can't be replaced
-        // with a bare verdict without silently deleting the user's rules.
-        if cur.contains(" glob") || cur.contains('*') && cur.split_whitespace().count() > 1 {
-            self.log(format!(
-                "{label} holds pattern rules; edit them in the config file to avoid data loss"
-            ));
+        match cfg
+            .set_nested_str(&row.keypath, next)
+            .and_then(|_| cfg.save())
+        {
+            Ok(()) => {
+                self.perm_refresh();
+                self.log(format!("{} = {next}", row.keypath.join(".")));
+            }
+            Err(e) => self.log(format!("permission write failed: {e}")),
+        }
+    }
+
+    fn perm_edit_current(&mut self) {
+        let Some(row) = self.perm_rows.get(self.perm_cursor).cloned() else {
+            return;
+        };
+        if row.is_container() {
+            self.log("pattern rules: select a child rule or press [n] to add one".to_string());
+            return;
+        }
+        self.open_edit(
+            row.keypath,
+            "permission",
+            "OpenCode permission verdict",
+            EditKind::Enum(crate::core::permissions::VERDICTS),
+            row.value,
+            EditTarget::Permission,
+            Mode::Permissions,
+        );
+    }
+
+    fn perm_pattern_new_start(&mut self) {
+        let Some(row) = self.perm_rows.get(self.perm_cursor).cloned() else {
+            return;
+        };
+        if row.depth != 0 {
+            self.log("select a permission tool row before adding a pattern".to_string());
+            return;
+        }
+        self.open_edit(
+            row.keypath,
+            "new permission pattern",
+            "glob or command pattern, e.g. git * or src/**/*.rs",
+            EditKind::Text,
+            String::new(),
+            EditTarget::PermissionNewPattern,
+            Mode::Permissions,
+        );
+    }
+
+    fn perm_pattern_delete(&mut self) {
+        let Some(row) = self.perm_rows.get(self.perm_cursor).cloned() else {
+            return;
+        };
+        if row.depth != 1 {
+            self.log("only a nested pattern rule can be deleted".to_string());
             return;
         }
         let Some(cfg) = self.config.as_mut() else {
             return;
         };
-        if cfg.set_nested_str(&keypath, next).is_ok() {
-            let _ = cfg.save();
-            self.perm_refresh();
-            self.log(format!("{label} = {next}"));
+        match cfg.remove_nested(&row.keypath) {
+            Ok(()) => match cfg.save() {
+                Ok(()) => {
+                    self.perm_refresh();
+                    self.log(format!("removed {}", row.keypath.join(".")));
+                }
+                Err(e) => self.log(format!("save failed: {e}")),
+            },
+            Err(e) => self.log(format!("delete failed: {e}")),
         }
     }
 
@@ -1576,47 +1778,37 @@ impl App {
         self.perm_rows = crate::core::permissions::scan(&self.effective_config(), &agent_names);
     }
 
-    // --- Providers (5.3) edit/delete helpers ---------------------------------------
+    // --- Providers (v1 schema) ------------------------------------------------------
 
-    /// Stage an edit on the highlighted provider: swap into the shared
-    /// GlobalEditPrompt input shell so the user can type the new value.
-    fn providers_edit_start(&mut self, field: &'static str) {
+    /// Edit an explicit v1 provider option (`options.baseURL` / `options.apiKey`).
+    fn providers_edit_option(&mut self, option: &'static str) {
         let Some(p) = self.providers_list.get(self.providers_cursor).cloned() else {
             return;
         };
-        let seg: Vec<&str> = field.split('.').collect();
-        let mut path: Vec<String> = vec!["provider".to_string(), p.id];
-        for s in seg {
-            path.push(s.to_string());
-        }
-        self.providers_edit_field = Some(path);
-        self.modal_input.clear();
-        self.mode = Mode::ProviderEdit;
-        self.log(format!(
-            "type new value for {} — Enter commits, Esc cancels",
-            field
-        ));
-    }
-
-    /// Enter on the providers-input modal: CST write + refresh list.
-    fn providers_edit_commit(&mut self) {
-        let Some(path) = self.providers_edit_field.take() else {
-            self.mode = Mode::Providers;
-            return;
-        };
-        let value = self.modal_input.trim().to_string();
-        let Some(cfg) = self.config.as_mut() else {
-            self.mode = Mode::Providers;
-            return;
-        };
-        if cfg.set_nested_str(&path, &value).is_ok() {
-            let _ = cfg.save();
-            self.providers_refresh();
-            self.log(format!("provider.{} updated", path[1..].join(".")));
-        }
-        let _ = value;
-        self.modal_input.clear();
-        self.mode = Mode::Providers;
+        let current = self
+            .effective_config()
+            .pointer(&format!("/provider/{}/options/{option}", p.id))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        self.open_edit(
+            vec![
+                "provider".to_string(),
+                p.id,
+                "options".to_string(),
+                option.to_string(),
+            ],
+            "provider option",
+            if option == "apiKey" {
+                "OpenCode provider options.apiKey (supports {env:NAME})"
+            } else {
+                "OpenCode provider options.baseURL"
+            },
+            EditKind::Text,
+            current,
+            EditTarget::Provider,
+            Mode::Providers,
+        );
     }
 
     fn providers_delete_current(&mut self) {
@@ -2011,33 +2203,33 @@ mod tests {
     }
 
     #[test]
-    fn settings_mode_dispatches_edit_and_commit_round_trip() {
+    fn settings_mode_dispatches_shared_edit_prompt_and_cancel() {
         let mut app = App::new(vec![agent("a")], PathBuf::from("."));
         // Enter Settings via MainMenu index 6 (boot hub = 0, then jump).
         app.mode = Mode::MainMenu;
         app.update(Action::MainMenuJump(6));
         assert_eq!(app.mode, Mode::Settings);
-        // Enter opens the typed-input modal on the highlighted row.
-        app.update(Action::SettingsEditStart);
-        assert_eq!(app.mode, Mode::SettingsEdit);
-        // Type then commit (theme is the first row).
-        for ch in "dark".chars() {
+        // The first row is model (text), so e opens the focused shared dialog.
+        app.update(Action::EditStart);
+        assert_eq!(app.mode, Mode::EditPrompt);
+        assert_eq!(
+            app.edit_prompt.as_ref().map(|p| p.keypath.as_slice()),
+            Some(["model".to_string()].as_slice()),
+            "dialog exposes the exact variable name"
+        );
+        for ch in "9router/test".chars() {
             app.update(Action::ModalInput(ch));
         }
-        app.update(Action::SettingsEditCommit);
-        assert_eq!(app.mode, Mode::Settings);
-        assert_eq!(
-            app.settings_rows
-                .iter()
-                .find(|r| r.key == "theme")
-                .map(|r| r.value.as_str()),
-            Some("dark"),
-            "commit persists to in-memory rows (CST write to disk applied on save)"
-        );
-        // Esc in edit mode returns to Settings.
-        app.update(Action::SettingsEditStart);
+        assert!(app
+            .edit_prompt
+            .as_ref()
+            .unwrap()
+            .buffer
+            .ends_with("9router/test"));
+        // Esc always returns focus to the originating pane and discards input.
         app.update(Action::CancelModal);
         assert_eq!(app.mode, Mode::Settings);
+        assert!(app.edit_prompt.is_none());
     }
 
     #[test]
