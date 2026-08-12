@@ -208,6 +208,16 @@ pub fn merge_value(higher: &Value, lower: &Value) -> Value {
 /// across project + global: project items are `Primary` (editable); keys
 /// supplied only by global sources appear as `GlobalReadOnly` so the UI can
 /// show them without letting +/- write into ~/.config.
+/// Merged (project + global + env-override) view of the config, for read-only
+/// panes that must show effective values rather than just the editable file.
+/// Returns `Value::Null` when no config source exists anywhere.
+pub fn merged_value(project_root: &Path) -> Value {
+    resolve(project_root)
+        .ok()
+        .and_then(|r| r.merged_value)
+        .unwrap_or(Value::Null)
+}
+
 pub fn ensure_loaded(
     project_root: &Path,
 ) -> Result<(JsoncConfig, Vec<super::jsonc_config::ConfigItem>), ResolveError> {

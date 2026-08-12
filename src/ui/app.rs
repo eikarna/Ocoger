@@ -330,7 +330,15 @@ impl App {
             .collect();
         let (fetch_tx, fetch_rx) = tokio::sync::mpsc::unbounded_channel();
         let commands = crate::core::commands::list_commands(&project_root).unwrap_or_default();
-        let config_value: Option<serde_json::Value> = config.as_ref().and_then(|c| c.value().ok());
+        // Read-only panes (providers / mcp / permissions / settings) must show
+        // the *effective* config, i.e. project + global merged. `config` is the
+        // editable project file only, so it misses global-only keys entirely.
+        let merged = crate::core::config_resolver::merged_value(&project_root);
+        let config_value: Option<serde_json::Value> = if merged.is_object() {
+            Some(merged)
+        } else {
+            config.as_ref().and_then(|c| c.value().ok())
+        };
         let providers_list = config_value
             .clone()
             .and_then(|v| crate::core::providers::ProviderInfo::scan_providers(&v).ok())
@@ -1428,12 +1436,21 @@ impl App {
         }
     }
 
-    fn settings_refresh(&mut self) {
-        if let Some(cfg) = self.config.as_ref() {
-            if let Ok(v) = cfg.value() {
-                self.settings_rows = crate::core::settings::scan(&v);
-            }
+    /// Effective config (project + global merged) for read-only pane refresh.
+    /// Falls back to the editable project file if nothing resolves.
+    fn effective_config(&self) -> serde_json::Value {
+        let merged = crate::core::config_resolver::merged_value(&self.project_root);
+        if merged.is_object() {
+            return merged;
         }
+        self.config
+            .as_ref()
+            .and_then(|c| c.value().ok())
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    fn settings_refresh(&mut self) {
+        self.settings_rows = crate::core::settings::scan(&self.effective_config());
     }
 
     // --- Phase 5.4 (MCP) helpers ------------------------------------------------
@@ -1540,16 +1557,12 @@ impl App {
     }
 
     fn perm_refresh(&mut self) {
-        if let (Some(cfg), _) = (self.config.as_ref(), ()) {
-            if let Ok(v) = cfg.value() {
-                let agent_names: Vec<String> = self
-                    .agents
-                    .iter()
-                    .filter_map(|a| a.path.file_stem().map(|s| s.to_string_lossy().to_string()))
-                    .collect();
-                self.perm_rows = crate::core::permissions::scan(&v, &agent_names);
-            }
-        }
+        let agent_names: Vec<String> = self
+            .agents
+            .iter()
+            .filter_map(|a| a.path.file_stem().map(|s| s.to_string_lossy().to_string()))
+            .collect();
+        self.perm_rows = crate::core::permissions::scan(&self.effective_config(), &agent_names);
     }
 
     // --- Providers (5.3) edit/delete helpers ---------------------------------------
@@ -1613,12 +1626,9 @@ impl App {
     }
 
     fn providers_refresh(&mut self) {
-        if let Some(cfg) = self.config.as_ref() {
-            if let Ok(v) = cfg.value() {
-                self.providers_list =
-                    crate::core::providers::ProviderInfo::scan_providers(&v).unwrap_or_default();
-            }
-        }
+        self.providers_list =
+            crate::core::providers::ProviderInfo::scan_providers(&self.effective_config())
+                .unwrap_or_default();
     }
 
     // --- Commands (5.2) create/delete -------------------------------------------------
