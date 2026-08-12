@@ -7,8 +7,18 @@ use thiserror::Error;
 pub struct Command {
     pub name: String,
     pub description: String,
+    /// Optional OpenCode command frontmatter fields, editable like subagents.
+    pub agent: Option<String>,
+    pub model: Option<String>,
     /// Source path; needed to update frontmatter without touching the body.
     pub path: std::path::PathBuf,
+}
+
+#[derive(Debug, Default)]
+pub struct CommandFields {
+    pub description: String,
+    pub agent: Option<String>,
+    pub model: Option<String>,
 }
 
 impl Command {
@@ -19,6 +29,8 @@ impl Command {
 
         let desc = map.get("description").cloned().unwrap_or_default();
         let name = map.get("name").cloned().unwrap_or_default();
+        let agent = map.get("agent").cloned();
+        let model = map.get("model").cloned();
 
         if name.is_empty() {
             return Err(ParseError::MissingField("name"));
@@ -30,18 +42,27 @@ impl Command {
         Ok(Self {
             name,
             description: desc,
+            agent,
+            model,
             path: std::path::PathBuf::new(),
         })
     }
 
-    /// Extract just `description` from frontmatter. `name` is optional in
-    /// OpenCode command files (the filename is the command name), so a missing
-    /// or partial frontmatter must not discard the file.
-    pub fn description_from_frontmatter(raw_yaml: &str) -> Option<String> {
-        let map: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(raw_yaml).ok()?;
-        map.get("description")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+    /// Fields surfaced in the command form. `name` is optional because the
+    /// filename is the OpenCode command name.
+    pub fn frontmatter_fields(raw_yaml: &str) -> CommandFields {
+        let map: HashMap<String, serde_yaml::Value> =
+            serde_yaml::from_str(raw_yaml).unwrap_or_default();
+        let string = |key: &str| {
+            map.get(key)
+                .and_then(serde_yaml::Value::as_str)
+                .map(str::to_string)
+        };
+        CommandFields {
+            description: string("description").unwrap_or_default(),
+            agent: string("agent"),
+            model: string("model"),
+        }
     }
 
     /// Serialize command → YAML frontmatter.
@@ -105,15 +126,17 @@ fn scan_dir_into(
             if stem.is_empty() {
                 continue;
             }
-            let description = find_delimiters(&content)
+            let fields = find_delimiters(&content)
                 .map(|(y1, y2)| &content[y1..y2])
-                .and_then(|yaml| Command::description_from_frontmatter(yaml))
+                .map(Command::frontmatter_fields)
                 .unwrap_or_default();
             out.insert(
                 stem.clone(),
                 Command {
                     name: stem,
-                    description,
+                    description: fields.description,
+                    agent: fields.agent,
+                    model: fields.model,
                     path,
                 },
             );
@@ -122,9 +145,17 @@ fn scan_dir_into(
     Ok(())
 }
 
-/// Replace or insert `description` in command frontmatter, preserving the
-/// Markdown body. Newline-containing descriptions are rejected by the UI.
-pub fn set_description(path: &std::path::Path, description: &str) -> Result<(), ScanError> {
+/// Replace or insert one scalar command frontmatter field, preserving the
+/// Markdown body and unrelated YAML. Only fields shown in the command form are
+/// accepted, so UI input cannot inject arbitrary YAML keys.
+pub fn set_frontmatter_field(
+    path: &std::path::Path,
+    key: &str,
+    value: &str,
+) -> Result<(), ScanError> {
+    if !matches!(key, "description" | "agent" | "model") {
+        return Err(ScanError::InvalidField(key.to_string()));
+    }
     let raw = std::fs::read_to_string(path)?;
     let next = if let Some((start, end)) = find_delimiters(&raw) {
         let yaml = &raw[start..end];
@@ -132,21 +163,22 @@ pub fn set_description(path: &std::path::Path, description: &str) -> Result<(), 
         let mut lines: Vec<String> = yaml.lines().map(str::to_string).collect();
         // Let serde_yaml quote colons, quotes, and other scalar edge cases;
         // only take the one emitted line, retaining every unrelated YAML line.
-        let encoded = serde_yaml::to_string(&serde_yaml::Value::String(description.to_string()))
-            .unwrap_or_else(|_| format!("{description:?}\n"));
+        let encoded = serde_yaml::to_string(&serde_yaml::Value::String(value.to_string()))
+            .unwrap_or_else(|_| format!("{value:?}\n"));
         let encoded = encoded.trim();
-        if let Some(line) = lines
-            .iter_mut()
-            .find(|l| l.trim_start().starts_with("description:"))
-        {
+        if let Some(line) = lines.iter_mut().find(|l| {
+            l.trim_start()
+                .strip_prefix(key)
+                .is_some_and(|tail| tail.trim_start().starts_with(':'))
+        }) {
             let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
-            *line = format!("{indent}description: {encoded}");
+            *line = format!("{indent}{key}: {encoded}");
         } else {
-            lines.push(format!("description: {encoded}"));
+            lines.push(format!("{key}: {encoded}"));
         }
         format!("{}{}{}", &raw[..start], lines.join("\n"), &raw[end..])
     } else {
-        format!("---\ndescription: {description}\n---\n{raw}")
+        format!("---\n{key}: {value}\n---\n{raw}")
     };
     crate::core::fs_util::atomic_write(path, &next)?;
     Ok(())
@@ -163,6 +195,8 @@ fn find_delimiters(content: &str) -> Option<(usize, usize)> {
 pub enum ScanError {
     #[error("IO error: {0}")]
     IO(#[from] std::io::Error),
+    #[error("unsupported command frontmatter field: {0}")]
+    InvalidField(String),
 }
 
 #[cfg(test)]
@@ -202,6 +236,8 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].name, "fixup");
         assert_eq!(out[0].description, "amend last commit");
+        assert!(out[0].agent.is_none());
+        assert!(out[0].model.is_none());
     }
 
     /// OpenCode command files often carry only `description` (or no frontmatter
@@ -234,13 +270,18 @@ mod tests {
         let path = dir.join("command.md");
         std::fs::write(
             &path,
-            "---\ndescription: old words\nagent: build\n---\n# Body\nkeep this body\n",
+            "---\ndescription: old words\nagent: build\nmodel: 9router/deepseek-v4\n---\n# Body\nkeep this body\n",
         )
         .unwrap();
-        set_description(&path, "new words").unwrap();
+        set_frontmatter_field(&path, "description", "new words").unwrap();
+        set_frontmatter_field(&path, "model", "9router/kimi-k3").unwrap();
         let out = std::fs::read_to_string(path).unwrap();
         assert!(out.contains("description: new words"));
         assert!(out.contains("agent: build"), "sibling frontmatter retained");
+        assert!(
+            out.contains("model: 9router/kimi-k3"),
+            "target scalar replaced"
+        );
         assert!(
             out.ends_with("# Body\nkeep this body\n"),
             "body byte sequence retained"

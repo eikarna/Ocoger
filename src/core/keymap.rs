@@ -276,6 +276,14 @@ impl Keymap {
                 Mode::Commands => {
                     t.insert(def(Char('n'), false, false, false), Action::CommandNewStart);
                     t.insert(def(Char('e'), false, false, false), Action::EditStart);
+                    t.insert(
+                        def(Char('a'), false, false, false),
+                        Action::CommandEditAgent,
+                    );
+                    t.insert(
+                        def(Char('m'), false, false, false),
+                        Action::CommandEditModel,
+                    );
                     t.insert(def(Char('d'), false, false, false), Action::CommandDelete);
                 }
                 Mode::Process => {

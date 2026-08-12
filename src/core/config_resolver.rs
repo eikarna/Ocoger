@@ -200,14 +200,16 @@ pub fn merge_value(higher: &Value, lower: &Value) -> Value {
     }
 }
 
-/// Drop-in replacement for `JsoncConfig::ensure_loaded` that consults the
-/// cascade instead of just `<project>/opencode.jsonc`. Bootstraps the first
-/// project-level config file when missing.
+/// Editable OpenCode config binding.
 ///
-/// Returns `(JsoncConfig, Vec<ConfigItem>)` where the items are *merged*
-/// across project + global: project items are `Primary` (editable); keys
-/// supplied only by global sources appear as `GlobalReadOnly` so the UI can
-/// show them without letting +/- write into ~/.config.
+/// Ocoger intentionally writes **only** the global OpenCode config under
+/// `~/.config/opencode/` (on this Windows machine:
+/// `C:\\Users\\Administrator\\.config\\opencode\\opencode.jsonc`). It never
+/// bootstraps `<project>/opencode.json(c)`: project configs are OpenCode-owned
+/// overrides and creating one just to save a UI edit is surprising.
+///
+/// Returns `(JsoncConfig, Vec<ConfigItem>)`; the list still represents the
+/// effective project+global cascade, but all popup writes target the global file.
 /// Merged (project + global + env-override) view of the config, for read-only
 /// panes that must show effective values rather than just the editable file.
 /// Returns `Value::Null` when no config source exists anywhere.
@@ -222,29 +224,29 @@ pub fn ensure_loaded(
     project_root: &Path,
 ) -> Result<(JsoncConfig, Vec<super::jsonc_config::ConfigItem>), ResolveError> {
     let resolved = resolve(project_root)?;
-    let primary_path = resolved
-        .resolution
-        .primary_path
-        .clone()
-        .unwrap_or_else(|| project_root.join("opencode.jsonc"));
-
-    // Always bind the editor to the project-root file. If it doesn't exist
-    // yet we hand back the synthesized default so `save()` creates it.
-    let project_path = project_root.join("opencode.jsonc");
-    let cfg = if project_path.is_file() {
-        JsoncConfig::load_at_path(&project_path)?.ok_or_else(|| {
+    let global_dir = global_config_dir().ok_or_else(|| {
+        ResolveError::Config(super::jsonc_config::ConfigError::Parse(
+            "global OpenCode config directory is unavailable".into(),
+        ))
+    })?;
+    // Preserve an existing .json extension; otherwise create the canonical
+    // global `.jsonc` file. This is the only synthesized config path.
+    let json = global_dir.join("opencode.json");
+    let global_path = if json.is_file() {
+        json
+    } else {
+        global_dir.join("opencode.jsonc")
+    };
+    let cfg = if global_path.is_file() {
+        JsoncConfig::load_at_path(&global_path)?.ok_or_else(|| {
             ResolveError::Config(super::jsonc_config::ConfigError::Parse(
                 "load returned None".into(),
             ))
         })?
-    } else if primary_path == project_path || !primary_path.is_file() {
-        JsoncConfig::ensure_loaded(project_root).map_err(ResolveError::from)?
     } else {
-        // Primary lives outside the project root (env override or global).
-        // We still let the UI edit it directly, but writes land there too.
-        JsoncConfig::load_at_path(&primary_path)?.unwrap_or_else(|| {
-            JsoncConfig::ensure_loaded(project_root).expect("fallback ensure_loaded")
-        })
+        std::fs::create_dir_all(&global_dir)?;
+        JsoncConfig::load_at_path(&global_path)?
+            .unwrap_or_else(|| JsoncConfig::default_at_path(global_path))
     };
 
     let mut primary_items = cfg.config_items().map_err(ResolveError::Config)?;
@@ -389,12 +391,15 @@ mod tests {
         assert!(out.merged_value.is_none());
         assert_eq!(out.resolution.primary_path, None);
         assert!(out.resolution.project_enabled);
-        // ensure_loaded bootstraps a valid default in memory; save() then
-        // persists the project-root JSONC.
+        // The only synthesized config is global; project root stays untouched.
         let (cfg, _items) = ensure_loaded(&dir).unwrap();
         cfg.save().unwrap();
-        let expected = dir.join("opencode.jsonc");
-        assert!(expected.is_file(), "bootstrapped default config");
+        let expected = global_sandbox.join("opencode.jsonc");
+        assert!(expected.is_file(), "bootstrapped global config");
+        assert!(
+            !dir.join("opencode.jsonc").exists(),
+            "must never create a project OpenCode config"
+        );
         std::env::remove_var("OCOGAR_GLOBAL_CONFIG_DIR");
     }
 
@@ -476,31 +481,20 @@ mod tests {
         .unwrap();
 
         let (_cfg, items) = ensure_loaded(&dir).unwrap();
+        // UI editing is global-only, so global values are the primary editable
+        // rows even if a project config contributes an effective override.
         let theme = items
             .iter()
-            .find(|i| i.label == "theme·global")
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected 'theme·global' item, got {:?}",
-                    items.iter().map(|i| &i.label).collect::<Vec<_>>()
-                )
-            });
+            .find(|i| i.label == "theme")
+            .unwrap_or_else(|| panic!("expected global theme item"));
         assert_eq!(theme.value, "dracula");
         assert_eq!(
             theme.origin,
-            super::super::jsonc_config::ConfigOrigin::GlobalReadOnly
-        );
-        // Project-only key still Primary.
-        let model = items.iter().find(|i| i.label == "model").unwrap();
-        assert_eq!(model.value, "proj-model");
-        assert_eq!(
-            model.origin,
             super::super::jsonc_config::ConfigOrigin::Primary
         );
-        // Provider global key surfaced.
         assert!(items
             .iter()
-            .any(|i| i.label == "provider.acme.baseURL·global" && i.value == "https://acme"));
+            .any(|i| i.label == "provider.acme.baseURL" && i.value == "https://acme"));
         std::env::remove_var("OCOGAR_GLOBAL_CONFIG_DIR");
     }
 }

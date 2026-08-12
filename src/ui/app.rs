@@ -82,8 +82,11 @@ pub enum EditTarget {
     Settings,
     Provider,
     Permission,
-    /// Edits a command's frontmatter description without touching its body.
-    Command(std::path::PathBuf),
+    /// Edits a whitelisted command frontmatter scalar without touching its body.
+    Command {
+        path: std::path::PathBuf,
+        key: String,
+    },
     /// Writes a remote `url` or local argv `command` at the exact MCP path.
     Mcp,
     /// Updates the selected subagents' whitelisted frontmatter field.
@@ -275,6 +278,9 @@ pub enum Action {
     CommandNewStart,
     /// Commands pane: create file + refresh list.
     CommandCreate,
+    /// Commands pane: edit `agent` / `model` frontmatter on highlighted file.
+    CommandEditAgent,
+    CommandEditModel,
     /// Commands pane: delete highlighted file.
     CommandDelete,
     /// MCP pane: toggle `enabled` on the highlighted server.
@@ -1241,6 +1247,16 @@ impl App {
                     self.command_create_from_modal();
                 }
             }
+            CommandEditAgent => {
+                if self.mode == Mode::Commands {
+                    self.command_edit_agent();
+                }
+            }
+            CommandEditModel => {
+                if self.mode == Mode::Commands {
+                    self.command_edit_model();
+                }
+            }
             CommandDelete => {
                 if self.mode == Mode::Commands {
                     self.command_delete_current();
@@ -1668,8 +1684,8 @@ impl App {
             return;
         }
         // These targets are file/model edits rather than JSONC config paths.
-        if let EditTarget::Command(path) = &prompt.target {
-            match crate::core::commands::set_description(path, &value) {
+        if let EditTarget::Command { path, key } = &prompt.target {
+            match crate::core::commands::set_frontmatter_field(path, key, &value) {
                 Ok(()) => {
                     self.edit_prompt = None;
                     self.mode = prompt.return_to;
@@ -1751,12 +1767,7 @@ impl App {
             EditTarget::Settings => self.settings_refresh(),
             EditTarget::Provider => self.providers_refresh(),
             EditTarget::Permission => self.perm_refresh(),
-            EditTarget::Command(path) => {
-                if let Err(e) = crate::core::commands::set_description(&path, &value) {
-                    self.log(format!("command save failed: {e}"));
-                }
-                self.commands_refresh();
-            }
+            EditTarget::Command { .. } => unreachable!("handled before JSONC write"),
             EditTarget::Mcp => self.mcp_refresh(),
             EditTarget::AgentParam(key) => {
                 let fields = [(key.clone(), value.clone())];
@@ -2040,15 +2051,51 @@ impl App {
             self.log("command source path unavailable".to_string());
             return;
         }
+        // One compact picker would be overkill: description is the default edit;
+        // the command list exposes `a` for agent and `m` for model below.
+        self.command_edit_field(command, "description");
+    }
+
+    fn command_edit_field(&mut self, command: crate::core::commands::Command, key: &'static str) {
+        let (current, hint) = match key {
+            "description" => (
+                command.description.clone(),
+                "command description; Markdown body is preserved",
+            ),
+            "agent" => (
+                command.agent.clone().unwrap_or_default(),
+                "OpenCode agent name",
+            ),
+            "model" => (
+                command.model.clone().unwrap_or_default(),
+                "provider/model, e.g. 9router/deepseek-v4",
+            ),
+            _ => return,
+        };
         self.open_edit(
-            vec!["command".to_string(), command.name],
-            "command description",
-            "description frontmatter; command body is preserved",
+            vec!["command".to_string(), command.name.clone(), key.to_string()],
+            "command frontmatter",
+            hint,
             EditKind::Text,
-            command.description,
-            EditTarget::Command(command.path),
+            current,
+            EditTarget::Command {
+                path: command.path,
+                key: key.to_string(),
+            },
             Mode::Commands,
         );
+    }
+
+    fn command_edit_agent(&mut self) {
+        if let Some(command) = self.commands.get(self.commands_cursor).cloned() {
+            self.command_edit_field(command, "agent");
+        }
+    }
+
+    fn command_edit_model(&mut self) {
+        if let Some(command) = self.commands.get(self.commands_cursor).cloned() {
+            self.command_edit_field(command, "model");
+        }
     }
 
     fn commands_refresh(&mut self) {
@@ -2071,6 +2118,8 @@ impl App {
         let tmp = crate::core::commands::Command {
             name: name.clone(),
             description: "created via TUI".to_string(),
+            agent: None,
+            model: None,
             path: std::path::PathBuf::new(),
         };
         let body = format!("{}\n\n", tmp.serialize());

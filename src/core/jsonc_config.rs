@@ -96,6 +96,15 @@ impl JsoncConfig {
         })
     }
 
+    /// Create an in-memory default at an explicit path. The caller decides
+    /// where it belongs; `save()` is the only operation that creates the file.
+    pub fn default_at_path(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            raw: "{\n  \"$schema\": \"https://opencode.ai/config.json\"\n}\n".to_string(),
+        }
+    }
+
     /// Load from an explicit path (anywhere on disk). Used by the cascade
     /// resolver when the discovered primary path lies outside
     /// `<project>/opencode.jsonc`.

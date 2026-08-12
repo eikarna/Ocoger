@@ -38,13 +38,18 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             };
             let usable = area.width.saturating_sub(8) as usize;
             let name_w = (usable / 3).clamp(16, 28);
+            let meta = match (&cmd.agent, &cmd.model) {
+                (Some(agent), Some(model)) => format!(" [{agent} · {model}]"),
+                (Some(agent), None) => format!(" [{agent}]"),
+                (None, Some(model)) => format!(" [{model}]"),
+                (None, None) => String::new(),
+            };
+            let desc_w = usable.saturating_sub(name_w + meta.chars().count().min(28));
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{marker} {:2} ", i + 1)),
                 Span::styled(fit(&cmd.name, name_w), style),
-                Span::styled(
-                    clip(&cmd.description, usable.saturating_sub(name_w)),
-                    Style::default().fg(t.dim),
-                ),
+                Span::styled(clip(&cmd.description, desc_w), Style::default().fg(t.dim)),
+                Span::styled(clip(&meta, 28), Style::default().fg(t.syntax_keyword)),
             ]))
         })
         .collect();
@@ -59,7 +64,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     frame.render_stateful_widget(List::new(items), chunks[1], &mut state);
 
     // Footer with key hints for this pane.
-    let hint = "[j/k] nav  [e] description  [n] new  [d] delete  [Esc] back";
+    let hint = "[j/k] nav  [e] description  [a] agent  [m] model  [n] new  [d] delete";
     let mut spans = header.spans;
     spans.push(Span::styled(
         format!("  {hint}"),
