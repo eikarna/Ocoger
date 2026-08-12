@@ -12,9 +12,27 @@ pub struct PermRow {
     pub agent_overrides: BTreeMap<String, String>,
 }
 
+/// Tool keys documented under `permission` (<https://opencode.ai/docs/permissions>).
+/// `edit` covers edit/write/patch; there are no separate keys for those.
 const KNOWN: &[&str] = &[
-    "read", "edit", "write", "glob", "grep", "bash", "task", "webfetch", "skill",
+    "read",
+    "edit",
+    "glob",
+    "grep",
+    "bash",
+    "task",
+    "skill",
+    "lsp",
+    "question",
+    "webfetch",
+    "websearch",
+    "external_directory",
+    "doom_loop",
 ];
+
+/// Documented verdicts. `permission` values are one of these, or an object
+/// mapping patterns to one of these.
+pub const VERDICTS: &[&str] = &["allow", "ask", "deny"];
 
 /// Render a permission value. OpenCode allows either a bare verdict
 /// (`"bash": "ask"`) or a glob table (`"bash": { "rm *": "deny", "*": "ask" }`).
@@ -37,22 +55,39 @@ fn render_value(v: Option<&Value>) -> String {
 }
 
 pub fn scan(config: &Value, agent_names: &[String]) -> Vec<PermRow> {
+    // `permission` may itself be a bare verdict string applying to everything.
+    let blanket = config.get("permission").and_then(Value::as_str);
     let perm_obj = config.get("permission").and_then(Value::as_object);
     let agent_obj = config.get("agent").and_then(Value::as_object);
+    // A top-level "*" inside the permission object is the catch-all default.
+    let star = perm_obj.and_then(|m| m.get("*")).and_then(Value::as_str);
 
     let mut tools: BTreeSet<String> = KNOWN.iter().map(|s| s.to_string()).collect();
     if let Some(map) = perm_obj {
         for t in map.keys() {
-            tools.insert(t.clone());
+            if t != "*" {
+                tools.insert(t.clone());
+            }
         }
     }
 
     let mut out: Vec<PermRow> = tools
         .into_iter()
-        .map(|tool| PermRow {
-            global: render_value(perm_obj.and_then(|m| m.get(&tool))),
-            tool,
-            agent_overrides: BTreeMap::new(),
+        .map(|tool| {
+            let explicit = render_value(perm_obj.and_then(|m| m.get(&tool)));
+            let global = if !explicit.is_empty() {
+                explicit
+            } else if let Some(b) = blanket.or(star) {
+                // Inherited from `"permission": "deny"` or `permission."*"`.
+                format!("{b} *")
+            } else {
+                String::new()
+            };
+            PermRow {
+                global,
+                tool,
+                agent_overrides: BTreeMap::new(),
+            }
         })
         .collect();
 
@@ -76,11 +111,23 @@ pub fn scan(config: &Value, agent_names: &[String]) -> Vec<PermRow> {
     out
 }
 
+/// Cycle a verdict: allow -> ask -> deny -> allow. Anything unrecognised
+/// (unset, or a glob table) starts at `ask`, the safe middle ground.
 pub fn next_value(cur: &str) -> &'static str {
     match cur {
-        "ask" => "allow",
-        "allow" => "deny",
+        "allow" => "ask",
+        "ask" => "deny",
+        "deny" => "allow",
         _ => "ask",
+    }
+}
+
+/// Documented default verdict when a key is absent. Most tools default to
+/// `allow`; `external_directory` and `doom_loop` default to `ask`.
+pub fn documented_default(tool: &str) -> &'static str {
+    match tool {
+        "external_directory" | "doom_loop" => "ask",
+        _ => "allow",
     }
 }
 
@@ -133,5 +180,51 @@ mod tests {
             !bash.agent_overrides.contains_key("stranger"),
             "agents not present on disk are ignored"
         );
+    }
+
+    #[test]
+    fn blanket_string_and_star_are_shown_as_inherited() {
+        // `"permission": "deny"` applies to everything.
+        let rows = scan(&json!({ "permission": "deny" }), &[]);
+        assert_eq!(
+            rows.iter().find(|r| r.tool == "bash").unwrap().global,
+            "deny *",
+            "blanket verdict marked as inherited, not as an explicit bash rule"
+        );
+
+        // A top-level "*" is the catch-all; explicit keys still win.
+        let rows = scan(
+            &json!({ "permission": { "*": "ask", "bash": "deny" } }),
+            &[],
+        );
+        let get = |t: &str| {
+            rows.iter()
+                .find(|r| r.tool == t)
+                .map(|r| r.global.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(get("bash"), "deny", "explicit key overrides the catch-all");
+        assert_eq!(get("read"), "ask *", "unset key inherits '*'");
+        assert!(
+            !rows.iter().any(|r| r.tool == "*"),
+            "'*' is a modifier, not a tool row"
+        );
+    }
+
+    /// Docs: allow -> ask -> deny. Unset/glob-table rows start at `ask`.
+    #[test]
+    fn next_value_cycles_documented_verdicts() {
+        assert_eq!(next_value("allow"), "ask");
+        assert_eq!(next_value("ask"), "deny");
+        assert_eq!(next_value("deny"), "allow");
+        assert_eq!(next_value(""), "ask");
+        assert_eq!(next_value("ask +2 glob"), "ask");
+    }
+
+    #[test]
+    fn documented_defaults_match_docs() {
+        assert_eq!(documented_default("bash"), "allow");
+        assert_eq!(documented_default("external_directory"), "ask");
+        assert_eq!(documented_default("doom_loop"), "ask");
     }
 }

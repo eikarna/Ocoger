@@ -27,14 +27,20 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
                 "ask" => Style::default().fg(t.syntax_keyword),
                 _ => Style::default().fg(t.dim),
             };
+            // Unset rows show the documented default, dimmed.
+            let shown = if r.global.is_empty() {
+                format!(
+                    "({})",
+                    crate::core::permissions::documented_default(&r.tool)
+                )
+            } else {
+                r.global.clone()
+            };
             let mut spans = vec![
                 Span::raw(format!("{marker} {} ", i + 1)),
-                Span::styled(format!("{:10}", r.tool), name_style),
+                Span::styled(format!("{:20}", r.tool), name_style),
                 Span::raw(" "),
-                Span::styled(
-                    format!("{:6}", if r.global.is_empty() { "-" } else { &r.global }),
-                    global_style,
-                ),
+                Span::styled(format!("{:14}", shown), global_style),
                 Span::raw(" "),
             ];
             for (agent, val) in &r.agent_overrides {
@@ -56,7 +62,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     state.select(Some(app.perm_cursor));
     frame.render_stateful_widget(List::new(items), chunks[1], &mut state);
 
-    let hint = "[Space] cycle ask/allow/deny (global)  [e] edit agent override";
+    let hint = "[j/k] nav  [Space] allow/ask/deny  [e] agent override  [Esc] back";
     let header = Line::from(vec![
         Span::styled(
             format!(" {:3} ", app.perm_rows.len()),

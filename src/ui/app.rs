@@ -1359,81 +1359,84 @@ impl App {
 
     // --- Phase 5.7 (Settings) helpers ---------------------------------------------
 
+    /// Build the CST value for a settings row so each key lands in the file
+    /// with its documented JSON type (bool / number / string).
+    fn settings_cst_value(
+        kind: crate::core::settings::Kind,
+        value: &str,
+    ) -> jsonc_parser::cst::CstInputValue {
+        use crate::core::settings::Kind;
+        use jsonc_parser::cst::CstInputValue as V;
+        match kind {
+            Kind::Bool => V::Bool(value == "true"),
+            // `autoupdate` is a documented bool|"notify" union: keep the bools
+            // typed and only "notify" as a string.
+            Kind::BoolOrNotify => match value {
+                "true" => V::Bool(true),
+                "false" => V::Bool(false),
+                other => V::String(other.to_owned()),
+            },
+            Kind::Number => match value.parse::<i64>() {
+                Ok(n) => V::Number(n.to_string()),
+                Err(_) => V::String(value.to_owned()),
+            },
+            Kind::Text | Kind::Enum(_) => V::String(value.to_owned()),
+        }
+    }
+
+    fn settings_write(&mut self, value: &str) {
+        let Some(row) = self.settings_rows.get(self.settings_cursor).cloned() else {
+            return;
+        };
+        let cst = Self::settings_cst_value(row.kind, value);
+        let Some(cfg) = self.config.as_mut() else {
+            self.log("no writable config; cannot save".to_string());
+            return;
+        };
+        match cfg.set_nested_value([&row.key], cst) {
+            Ok(()) => match cfg.save() {
+                Ok(()) => {
+                    self.settings_rows[self.settings_cursor].value = value.to_string();
+                    self.log(format!("{} = {}", row.key, value));
+                }
+                Err(e) => self.log(format!("save failed: {e}")),
+            },
+            Err(e) => self.log(format!("write failed: {e}")),
+        }
+    }
+
+    /// Space on a settings row: flip bools, cycle documented enums. Free-text
+    /// rows say so rather than silently doing nothing.
     fn settings_toggle_current(&mut self) {
         let Some(row) = self.settings_rows.get(self.settings_cursor).cloned() else {
             return;
         };
-        let cur = row.value.as_str();
-        let next = match cur {
-            "true" | "allow" => "false",
-            "false" | "deny" => "true",
-            _ => {
-                self.log(format!("'{}' is not a boolean; use [e] to edit", row.key));
-                return;
-            }
-        };
-        let Some(cfg) = self.config.as_mut() else {
-            return;
-        };
-        if cfg.set_nested_str([&row.key], next).is_ok() {
-            let _ = cfg.save();
-            self.settings_rows[self.settings_cursor].value = next.to_string();
-            self.log(format!("{} = {}", row.key, next));
+        match crate::core::settings::cycle(&row) {
+            Some(next) => self.settings_write(&next),
+            None => self.log(format!("'{}' is free text; press [e] to edit", row.key)),
         }
     }
 
+    /// `e` / Enter: enums and bools cycle in place; text rows open the modal.
     fn settings_edit_current(&mut self) {
         let Some(row) = self.settings_rows.get(self.settings_cursor).cloned() else {
             return;
         };
-        if row.key == "share" {
-            // cycle: off -> ask -> on
-            let next = match row.value.as_str() {
-                "off" | "" => "ask",
-                "ask" => "on",
-                _ => "off",
-            };
-            let Some(cfg) = self.config.as_mut() else {
-                return;
-            };
-            if cfg.set_nested_str([&row.key], next).is_ok() {
-                let _ = cfg.save();
-                self.settings_rows[self.settings_cursor].value = next.to_string();
-                self.log(format!("{} = {}", row.key, next));
-            }
-        } else {
-            // Open a real input modal: type, Enter commits, Esc cancels.
-            self.modal_input.clear();
-            self.mode = Mode::SettingsEdit;
-            self.log(format!(
-                "type new value for '{}', Enter commits, Esc cancels",
-                row.key
-            ));
+        if !matches!(row.kind, crate::core::settings::Kind::Text) {
+            self.settings_toggle_current();
+            return;
         }
+        self.modal_input = row.value.clone();
+        self.mode = Mode::SettingsEdit;
+        self.log(format!(
+            "{}: {} — Enter commits, Esc cancels",
+            row.key, row.hint
+        ));
     }
 
     fn settings_edit_commit(&mut self, value: &str) {
-        let Some(row) = self.settings_rows.get(self.settings_cursor).cloned() else {
-            return;
-        };
-        // Type-aware write: known bools map to typed CST; others stay strings.
-        let known_bool = matches!(row.key.as_str(), "autoupdate" | "share");
-        let Some(cfg) = self.config.as_mut() else {
-            return;
-        };
-        let res = if known_bool {
-            cfg.set_nested_value(
-                [&row.key],
-                jsonc_parser::cst::CstInputValue::Bool(value == "true"),
-            )
-        } else {
-            cfg.set_top_level_str(&row.key, value)
-        };
-        if res.is_ok() {
-            let _ = cfg.save();
-            self.settings_refresh();
-            self.log(format!("{} = {}", row.key, value));
-        }
+        self.settings_write(value);
+        self.settings_refresh();
     }
 
     /// Effective config (project + global merged) for read-only pane refresh.
@@ -1546,6 +1549,14 @@ impl App {
             }
         };
         let next = crate::core::permissions::next_value(&cur);
+        // A glob table (`"bash": { "rm *": "deny", ... }`) can't be replaced
+        // with a bare verdict without silently deleting the user's rules.
+        if cur.contains(" glob") || cur.contains('*') && cur.split_whitespace().count() > 1 {
+            self.log(format!(
+                "{label} holds pattern rules; edit them in the config file to avoid data loss"
+            ));
+            return;
+        }
         let Some(cfg) = self.config.as_mut() else {
             return;
         };

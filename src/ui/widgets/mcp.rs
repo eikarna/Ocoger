@@ -52,7 +52,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     state.select(Some(app.mcp_cursor));
     frame.render_stateful_widget(List::new(items), chunks[1], &mut state);
 
-    let hint = "[Space] toggle ●/○  [t] type local/remote  [d] delete  [e] edit cmd/url";
+    let hint = "[Space] enable/disable  [t] local/remote  [d] delete  [Esc] back";
     let header = Line::from(vec![
         Span::styled(
             format!(" {:3} ", app.mcp_list.len()),
