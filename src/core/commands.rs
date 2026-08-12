@@ -7,6 +7,8 @@ use thiserror::Error;
 pub struct Command {
     pub name: String,
     pub description: String,
+    /// Source path; needed to update frontmatter without touching the body.
+    pub path: std::path::PathBuf,
 }
 
 impl Command {
@@ -28,6 +30,7 @@ impl Command {
         Ok(Self {
             name,
             description: desc,
+            path: std::path::PathBuf::new(),
         })
     }
 
@@ -111,10 +114,41 @@ fn scan_dir_into(
                 Command {
                     name: stem,
                     description,
+                    path,
                 },
             );
         }
     }
+    Ok(())
+}
+
+/// Replace or insert `description` in command frontmatter, preserving the
+/// Markdown body. Newline-containing descriptions are rejected by the UI.
+pub fn set_description(path: &std::path::Path, description: &str) -> Result<(), ScanError> {
+    let raw = std::fs::read_to_string(path)?;
+    let next = if let Some((start, end)) = find_delimiters(&raw) {
+        let yaml = &raw[start..end];
+        // Avoid reserializing the YAML or touching the Markdown body.
+        let mut lines: Vec<String> = yaml.lines().map(str::to_string).collect();
+        // Let serde_yaml quote colons, quotes, and other scalar edge cases;
+        // only take the one emitted line, retaining every unrelated YAML line.
+        let encoded = serde_yaml::to_string(&serde_yaml::Value::String(description.to_string()))
+            .unwrap_or_else(|_| format!("{description:?}\n"));
+        let encoded = encoded.trim();
+        if let Some(line) = lines
+            .iter_mut()
+            .find(|l| l.trim_start().starts_with("description:"))
+        {
+            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            *line = format!("{indent}description: {encoded}");
+        } else {
+            lines.push(format!("description: {encoded}"));
+        }
+        format!("{}{}{}", &raw[..start], lines.join("\n"), &raw[end..])
+    } else {
+        format!("---\ndescription: {description}\n---\n{raw}")
+    };
+    crate::core::fs_util::atomic_write(path, &next)?;
     Ok(())
 }
 
@@ -191,6 +225,26 @@ mod tests {
         assert_eq!(out[0].description, "", "missing description is empty");
         assert_eq!(out[1].name, "ship");
         assert_eq!(out[1].description, "cut a release");
+    }
+
+    #[test]
+    fn set_description_preserves_body_and_replaces_only_frontmatter_field() {
+        let _guard = crate::core::test_support::ENV_LOCK.lock().unwrap();
+        let dir = isolated_root("edit");
+        let path = dir.join("command.md");
+        std::fs::write(
+            &path,
+            "---\ndescription: old words\nagent: build\n---\n# Body\nkeep this body\n",
+        )
+        .unwrap();
+        set_description(&path, "new words").unwrap();
+        let out = std::fs::read_to_string(path).unwrap();
+        assert!(out.contains("description: new words"));
+        assert!(out.contains("agent: build"), "sibling frontmatter retained");
+        assert!(
+            out.ends_with("# Body\nkeep this body\n"),
+            "body byte sequence retained"
+        );
     }
 
     #[test]

@@ -163,8 +163,7 @@ impl Keymap {
         t.insert(def(Char('k'), false, false, false), Action::FormMove(false));
         t.insert(def(Up, false, false, false), Action::FormMove(false));
         t.insert(def(Tab, false, false, false), Action::FormExit);
-        t.insert(def(Char('e'), false, false, false), Action::FormExit);
-        t.insert(def(Char('g'), false, false, false), Action::FormExit);
+        t.insert(def(Char('e'), false, false, false), Action::FormApply);
         t.insert(def(Char('+'), false, false, false), Action::FormModify(1));
         t.insert(def(Char('='), false, false, false), Action::FormModify(1));
         t.insert(def(Char('-'), false, false, false), Action::FormModify(-1));
@@ -276,6 +275,7 @@ impl Keymap {
                 }
                 Mode::Commands => {
                     t.insert(def(Char('n'), false, false, false), Action::CommandNewStart);
+                    t.insert(def(Char('e'), false, false, false), Action::EditStart);
                     t.insert(def(Char('d'), false, false, false), Action::CommandDelete);
                 }
                 Mode::Process => {

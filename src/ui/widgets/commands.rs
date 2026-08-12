@@ -1,6 +1,7 @@
 //! Phase 5.2: Commands pane — list of .opencode/commands/*.md (name, description).
 
 use crate::ui::app::App;
+use crate::ui::widgets::util::{clip, fit};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -35,11 +36,15 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             } else {
                 Style::default().fg(t.fg)
             };
+            let usable = area.width.saturating_sub(8) as usize;
+            let name_w = (usable / 3).clamp(16, 28);
             ListItem::new(Line::from(vec![
-                Span::raw(format!("{marker} {} ", i + 1)),
-                Span::styled(format!("{:20}", &cmd.name[..cmd.name.len().min(19)]), style),
-                Span::raw(" "),
-                Span::styled(cmd.description.clone(), Style::default().fg(t.dim)),
+                Span::raw(format!("{marker} {:2} ", i + 1)),
+                Span::styled(fit(&cmd.name, name_w), style),
+                Span::styled(
+                    clip(&cmd.description, usable.saturating_sub(name_w)),
+                    Style::default().fg(t.dim),
+                ),
             ]))
         })
         .collect();
@@ -54,7 +59,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     frame.render_stateful_widget(List::new(items), chunks[1], &mut state);
 
     // Footer with key hints for this pane.
-    let hint = "[j/k] nav  [n] new command  [d] delete";
+    let hint = "[j/k] nav  [e] description  [n] new  [d] delete  [Esc] back";
     let mut spans = header.spans;
     spans.push(Span::styled(
         format!("  {hint}"),

@@ -87,6 +87,14 @@ mod tests {
     }
 
     #[test]
+    fn scan_prefers_remote_url_even_if_command_also_exists() {
+        let out = McpEntry::scan(&json!({
+            "mcp": { "dual": { "type": "remote", "url": "https://example.test/mcp", "command": ["ignored"] } }
+        }));
+        assert_eq!(out[0].command_or_url, "https://example.test/mcp");
+    }
+
+    #[test]
     fn scan_without_mcp_key_is_empty() {
         assert!(McpEntry::scan(&json!({})).is_empty());
         assert!(McpEntry::scan(&Value::Null).is_empty());

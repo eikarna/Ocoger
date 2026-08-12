@@ -77,11 +77,17 @@ impl From<crate::core::settings::Kind> for EditKind {
 }
 
 /// Which pane opened the dialog, so the commit path knows what to refresh.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditTarget {
     Settings,
     Provider,
     Permission,
+    /// Edits a command's frontmatter description without touching its body.
+    Command(std::path::PathBuf),
+    /// Writes a remote `url` or local argv `command` at the exact MCP path.
+    Mcp,
+    /// Updates the selected subagents' whitelisted frontmatter field.
+    AgentParam(String),
     /// Collecting a new `permission.<tool>.<pattern>` key rather than a value;
     /// commit re-opens the dialog to collect that pattern's verdict.
     PermissionNewPattern,
@@ -797,7 +803,11 @@ impl App {
                 }
             }
             FormModify(d) => self.modify_form_cursor(d),
-            FormApply => {} // reserved for two-step (currently edits apply immediately)
+            FormApply => {
+                if self.mode == Mode::Form {
+                    self.form_edit_current();
+                }
+            }
             FormExit => {
                 if self.mode == Mode::Form {
                     self.mode = Mode::List;
@@ -1154,9 +1164,12 @@ impl App {
                     self.mcp_delete_current();
                 }
             }
-            McpEditStart | McpEditCommit => {
-                self.log("inline command/url edit not implemented (Phase 5 polish)".to_string());
+            McpEditStart => {
+                if self.mode == Mode::Mcp {
+                    self.mcp_edit_current();
+                }
             }
+            McpEditCommit => {}
             PermCycle => {
                 if self.mode == Mode::Permissions {
                     self.perm_cycle_current();
@@ -1197,6 +1210,7 @@ impl App {
             EditStart => match self.mode {
                 Mode::Settings => self.settings_edit_current(),
                 Mode::Permissions => self.perm_edit_current(),
+                Mode::Commands => self.command_edit_current(),
                 _ => {}
             },
             ProviderEditOption(option) => {
@@ -1289,6 +1303,80 @@ impl App {
 
     /// +/- step on the current form row. Applies to selected agents or the
     /// global config item immediately (config mutation is CST-preserving).
+    /// Edit the selected agent frontmatter field through the shared dialog.
+    /// Agent mutations use AgentFile::update_models, which only accepts the
+    /// explicit EDITABLE_KEYS whitelist and preserves YAML/body fidelity.
+    fn form_edit_current(&mut self) {
+        if self.mode != Mode::Form || self.form_band != Panel::AgentParams {
+            return;
+        }
+        let Some(agent) = self.agents.get(self.cursor) else {
+            return;
+        };
+        let (key, current, kind, hint) = match self.form_cursor {
+            0 => (
+                "model",
+                agent.frontmatter.model.clone(),
+                EditKind::Text,
+                "provider/model, e.g. anthropic/claude-sonnet-4-5",
+            ),
+            1 => (
+                "temperature",
+                agent
+                    .frontmatter
+                    .temperature
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                EditKind::Text,
+                "number; OpenCode agent frontmatter",
+            ),
+            2 => (
+                "top_k",
+                agent
+                    .frontmatter
+                    .top_k
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                EditKind::Number,
+                "non-negative integer",
+            ),
+            3 => (
+                "top_p",
+                agent
+                    .frontmatter
+                    .top_p
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                EditKind::Text,
+                "number between 0 and 1",
+            ),
+            4 => (
+                "reasoning_effort",
+                agent
+                    .frontmatter
+                    .reasoning_effort
+                    .clone()
+                    .unwrap_or_default(),
+                EditKind::Text,
+                "provider-supported reasoning effort",
+            ),
+            _ => return,
+        };
+        self.open_edit(
+            vec![
+                "agent".to_string(),
+                agent.path.display().to_string(),
+                key.to_string(),
+            ],
+            "subagent parameter",
+            hint,
+            kind,
+            current,
+            EditTarget::AgentParam(key.to_string()),
+            Mode::Form,
+        );
+    }
+
     fn modify_form_cursor(&mut self, d: i32) {
         if self.mode != Mode::Form || self.form_cursor >= self.form_item_count() {
             return;
@@ -1579,6 +1667,69 @@ impl App {
             );
             return;
         }
+        // These targets are file/model edits rather than JSONC config paths.
+        if let EditTarget::Command(path) = &prompt.target {
+            match crate::core::commands::set_description(path, &value) {
+                Ok(()) => {
+                    self.edit_prompt = None;
+                    self.mode = prompt.return_to;
+                    self.commands_refresh();
+                    self.log(format!("{} = {}", prompt.keypath.join("."), value));
+                }
+                Err(e) => self.log(format!("command save failed: {e}")),
+            }
+            return;
+        }
+        if let EditTarget::AgentParam(key) = &prompt.target {
+            let fields = [(key.clone(), value.clone())];
+            let selected = self.selected_count();
+            if selected > 0 {
+                for agent in self.agents.iter_mut().filter(|a| a.is_selected) {
+                    agent.update_models(&fields);
+                }
+            } else if let Some(agent) = self.agents.get_mut(self.cursor) {
+                agent.update_models(&fields);
+            }
+            self.edit_prompt = None;
+            self.mode = prompt.return_to;
+            let scope = if selected > 0 {
+                "selected agents"
+            } else {
+                "current agent"
+            };
+            self.log(format!("set {key} for {scope}; press [s] to save"));
+            return;
+        }
+        if prompt.target == EditTarget::Mcp {
+            let is_command = prompt.keypath.last().map(String::as_str) == Some("command");
+            let cst = if is_command {
+                jsonc_parser::cst::CstInputValue::Array(
+                    value
+                        .split_whitespace()
+                        .map(|s| jsonc_parser::cst::CstInputValue::String(s.to_string()))
+                        .collect(),
+                )
+            } else {
+                prompt.cst_value()
+            };
+            let Some(cfg) = self.config.as_mut() else {
+                self.log("no writable config; cannot save".to_string());
+                return;
+            };
+            match cfg
+                .set_nested_value(&prompt.keypath, cst)
+                .and_then(|_| cfg.save())
+            {
+                Ok(()) => {
+                    self.edit_prompt = None;
+                    self.mode = prompt.return_to;
+                    self.mcp_refresh();
+                    self.log(format!("{} = {}", prompt.keypath.join("."), value));
+                }
+                Err(e) => self.log(format!("MCP save failed: {e}")),
+            }
+            return;
+        }
         let Some(cfg) = self.config.as_mut() else {
             self.log("no writable config; cannot save".to_string());
             return;
@@ -1600,6 +1751,20 @@ impl App {
             EditTarget::Settings => self.settings_refresh(),
             EditTarget::Provider => self.providers_refresh(),
             EditTarget::Permission => self.perm_refresh(),
+            EditTarget::Command(path) => {
+                if let Err(e) = crate::core::commands::set_description(&path, &value) {
+                    self.log(format!("command save failed: {e}"));
+                }
+                self.commands_refresh();
+            }
+            EditTarget::Mcp => self.mcp_refresh(),
+            EditTarget::AgentParam(key) => {
+                let fields = [(key.clone(), value.clone())];
+                for agent in self.agents.iter_mut().filter(|a| a.is_selected) {
+                    agent.update_models(&fields);
+                }
+                self.log(format!("set {key} for selected agents; press [s] to save"));
+            }
             EditTarget::PermissionNewPattern => unreachable!("handled before write"),
         }
         self.log(format!("{} = {}", key_label, value));
@@ -1623,6 +1788,37 @@ impl App {
     }
 
     // --- Phase 5.4 (MCP) helpers ------------------------------------------------
+
+    fn mcp_edit_current(&mut self) {
+        let Some(entry) = self.mcp_list.get(self.mcp_cursor).cloned() else {
+            return;
+        };
+        let key = if entry.kind == "remote" {
+            "url"
+        } else {
+            "command"
+        };
+        self.open_edit(
+            vec!["mcp".to_string(), entry.name, key.to_string()],
+            "MCP server",
+            if key == "url" {
+                "remote MCP URL"
+            } else {
+                "local command and arguments (space-separated)"
+            },
+            EditKind::Text,
+            entry.command_or_url,
+            EditTarget::Mcp,
+            Mode::Mcp,
+        );
+    }
+
+    fn mcp_refresh(&mut self) {
+        self.mcp_list = crate::core::mcp::McpEntry::scan(&self.effective_config());
+        if self.mcp_cursor >= self.mcp_list.len() {
+            self.mcp_cursor = self.mcp_list.len().saturating_sub(1);
+        }
+    }
 
     fn mcp_toggle_current(&mut self) {
         let Some(mut e) = self.mcp_list.get(self.mcp_cursor).cloned() else {
@@ -1834,7 +2030,35 @@ impl App {
                 .unwrap_or_default();
     }
 
-    // --- Commands (5.2) create/delete -------------------------------------------------
+    // --- Commands (5.2) create/edit/delete --------------------------------------------
+
+    fn command_edit_current(&mut self) {
+        let Some(command) = self.commands.get(self.commands_cursor).cloned() else {
+            return;
+        };
+        if command.path.as_os_str().is_empty() {
+            self.log("command source path unavailable".to_string());
+            return;
+        }
+        self.open_edit(
+            vec!["command".to_string(), command.name],
+            "command description",
+            "description frontmatter; command body is preserved",
+            EditKind::Text,
+            command.description,
+            EditTarget::Command(command.path),
+            Mode::Commands,
+        );
+    }
+
+    fn commands_refresh(&mut self) {
+        if let Ok(commands) = crate::core::commands::list_commands(&self.project_root) {
+            self.commands = commands;
+            if self.commands_cursor >= self.commands.len() {
+                self.commands_cursor = self.commands.len().saturating_sub(1);
+            }
+        }
+    }
 
     fn command_create_from_modal(&mut self) {
         let name = self.modal_input.trim().to_string();
@@ -1847,6 +2071,7 @@ impl App {
         let tmp = crate::core::commands::Command {
             name: name.clone(),
             description: "created via TUI".to_string(),
+            path: std::path::PathBuf::new(),
         };
         let body = format!("{}\n\n", tmp.serialize());
         let path = self

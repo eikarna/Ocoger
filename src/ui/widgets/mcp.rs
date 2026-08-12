@@ -1,6 +1,7 @@
 //! Phase 5.4: MCP servers pane — mcp.<name> toggles/edits.
 
 use crate::ui::app::App;
+use crate::ui::widgets::util::{clip, fit};
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -27,16 +28,18 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
             } else {
                 Style::default().fg(t.fg)
             };
+            let usable = area.width.saturating_sub(10) as usize;
+            let name_w = (usable / 4).clamp(14, 26);
+            let kind = format!("({})", e.kind);
+            let value_w = usable.saturating_sub(name_w + kind.chars().count() + 3);
             ListItem::new(Line::from(vec![
-                Span::raw(format!("{marker} {} ", i + 1)),
+                Span::raw(format!("{marker} {:2} ", i + 1)),
                 Span::styled(state, state_style),
                 Span::raw(" "),
-                Span::styled(format!("{:22}", e.name), name_style),
-                Span::raw(" "),
-                Span::styled(format!("({})", e.kind), Style::default().fg(t.dim)),
-                Span::raw(" "),
+                Span::styled(fit(&e.name, name_w), name_style),
+                Span::styled(fit(&kind, 10), Style::default().fg(t.dim)),
                 Span::styled(
-                    e.command_or_url.clone(),
+                    clip(&e.command_or_url, value_w),
                     Style::default().fg(t.syntax_keyword),
                 ),
             ]))
@@ -52,7 +55,7 @@ pub fn render(frame: &mut Frame, area: ratatui::layout::Rect, app: &App) {
     state.select(Some(app.mcp_cursor));
     frame.render_stateful_widget(List::new(items), chunks[1], &mut state);
 
-    let hint = "[Space] enable/disable  [t] local/remote  [d] delete  [Esc] back";
+    let hint = "[Space] enable  [e] url/command  [t] type  [d] delete  [Esc] back";
     let header = Line::from(vec![
         Span::styled(
             format!(" {:3} ", app.mcp_list.len()),
