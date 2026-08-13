@@ -100,8 +100,6 @@ fn format_row_at(app: &App, band: Panel, idx: usize, band_is_active: bool) -> Li
 }
 
 // Legacy helper retained for readability; calls into `format_row_at` via app.
-#[allow(dead_code)]
-
 impl App {
     pub fn form_item_count_at(&self, band: Panel) -> usize {
         match band {

@@ -451,7 +451,7 @@ impl App {
             .unwrap_or_default();
         let mcp_list = config_value
             .as_ref()
-            .map(|v| crate::core::mcp::McpEntry::scan(v))
+            .map(crate::core::mcp::McpEntry::scan)
             .unwrap_or_default();
         let agent_names: Vec<String> = agents
             .iter()
@@ -513,7 +513,7 @@ impl App {
             proc_scroll: 0,
             settings_rows: config_value
                 .as_ref()
-                .map(|v| crate::core::settings::scan(v))
+                .map(crate::core::settings::scan)
                 .unwrap_or_default(),
             settings_cursor: 0,
             edit_prompt: None,
@@ -781,16 +781,13 @@ impl App {
                     self.modal_focus = ModalFocus::Input;
                     self.mode = Mode::Picker;
                 }
-                Mode::Form => {
-                    if self.picker_catalog.is_empty() {
-                        self.log(
-                            "Model catalog is empty; fetch models first (Phase 2 fetcher)"
-                                .to_string(),
-                        );
-                    }
-                    // Entering picker from Form only makes sense on the model band. Keep
-                    // mode unchanged; UI can still show filtered catalog if desired.
+                Mode::Form if self.picker_catalog.is_empty() => {
+                    self.log(
+                        "Model catalog is empty; fetch models first (Phase 2 fetcher)".to_string(),
+                    );
                 }
+                // Entering picker from Form only makes sense on the model band. Keep
+                // mode unchanged; UI can still show filtered catalog if desired.
                 _ => {}
             },
             FormMove(next) => {
@@ -1617,6 +1614,7 @@ impl App {
     }
 
     /// Open the single shared dialog and move keyboard focus to it.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn open_edit(
         &mut self,
         keypath: Vec<String>,
@@ -2124,12 +2122,31 @@ impl App {
         let Some(command) = self.commands.get(self.commands_cursor).cloned() else {
             return;
         };
-        if !command
-            .path
-            .starts_with(self.project_root.join(".opencode"))
-        {
+        let commands_dir = self.project_root.join(".opencode").join("commands");
+        if !command.path.starts_with(&commands_dir) {
             self.log(format!(
                 "command '{}' is global and cannot be deleted here",
+                command.name
+            ));
+            return;
+        }
+        let target = match command.path.canonicalize() {
+            Ok(path) => path,
+            Err(e) => {
+                self.log(format!("command delete failed: {e}"));
+                return;
+            }
+        };
+        let commands_dir = match commands_dir.canonicalize() {
+            Ok(path) => path,
+            Err(e) => {
+                self.log(format!("command delete failed: {e}"));
+                return;
+            }
+        };
+        if !target.starts_with(commands_dir) {
+            self.log(format!(
+                "command '{}' resolves outside project commands and cannot be deleted",
                 command.name
             ));
             return;

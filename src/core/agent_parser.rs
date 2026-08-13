@@ -214,10 +214,9 @@ fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
     // that default to CRLF on Windows.
     let (rest, nl) = if let Some(r) = content.strip_prefix("---\r\n") {
         (r, "\r\n")
-    } else if let Some(r) = content.strip_prefix("---\n") {
-        (r, "\n")
     } else {
-        return None;
+        let r = content.strip_prefix("---\n")?;
+        (r, "\n")
     };
     let close_marker = format!("{nl}---");
     let end = rest.find(&close_marker)?;

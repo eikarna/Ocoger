@@ -55,6 +55,12 @@ pub struct ProcessManager {
     pub pid: Option<u32>,
 }
 
+impl Default for ProcessManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProcessManager {
     pub fn new() -> Self {
         let (tx, output_rx) = mpsc::unbounded_channel();
