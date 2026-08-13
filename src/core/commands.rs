@@ -145,6 +145,46 @@ fn scan_dir_into(
     Ok(())
 }
 
+/// Create a project-local command in `.opencode/commands/`.
+///
+/// Command names become file stems, so reject path components before writing.
+pub fn create_project_command(
+    project_root: &std::path::Path,
+    name: &str,
+) -> Result<Command, ScanError> {
+    if name.is_empty()
+        || std::path::Path::new(name).components().count() != 1
+        || name == "."
+        || name == ".."
+    {
+        return Err(ScanError::InvalidName(name.to_string()));
+    }
+
+    let path = project_root
+        .join(".opencode")
+        .join("commands")
+        .join(format!("{name}.md"));
+    if path.exists() {
+        return Err(ScanError::AlreadyExists(name.to_string()));
+    }
+    let command = Command {
+        name: name.to_string(),
+        description: "created via TUI".to_string(),
+        agent: None,
+        model: None,
+        path,
+    };
+    let parent = command.path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "command path has no parent",
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+    crate::core::fs_util::atomic_write(&command.path, &format!("{}\n\n", command.serialize()))?;
+    Ok(command)
+}
+
 /// Replace or insert one scalar command frontmatter field, preserving the
 /// Markdown body and unrelated YAML. Only fields shown in the command form are
 /// accepted, so UI input cannot inject arbitrary YAML keys.
@@ -197,6 +237,10 @@ pub enum ScanError {
     IO(#[from] std::io::Error),
     #[error("unsupported command frontmatter field: {0}")]
     InvalidField(String),
+    #[error("invalid command name: {0}")]
+    InvalidName(String),
+    #[error("command already exists: {0}")]
+    AlreadyExists(String),
 }
 
 #[cfg(test)]
@@ -286,6 +330,26 @@ mod tests {
             out.ends_with("# Body\nkeep this body\n"),
             "body byte sequence retained"
         );
+    }
+
+    #[test]
+    fn create_project_command_creates_parent_and_rejects_path_names() {
+        let _guard = crate::core::test_support::ENV_LOCK.lock().unwrap();
+        let dir = isolated_root("create");
+        let created = create_project_command(&dir, "deploy").unwrap();
+        assert_eq!(created.path, dir.join(".opencode/commands/deploy.md"));
+        assert_eq!(
+            std::fs::read_to_string(&created.path).unwrap(),
+            "---\nname: deploy\ndescription: created via TUI\n---\n\n"
+        );
+        assert!(matches!(
+            create_project_command(&dir, "../outside"),
+            Err(ScanError::InvalidName(_))
+        ));
+        assert!(matches!(
+            create_project_command(&dir, "deploy"),
+            Err(ScanError::AlreadyExists(_))
+        ));
     }
 
     #[test]

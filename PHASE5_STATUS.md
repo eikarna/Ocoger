@@ -7,7 +7,7 @@ Baseline: worktree after wiring fix (build green, 78 tests passing)
 Status Summary
 ─────────────────────────────────────────────────────────────────────
 ✓ Phase 5.1: MainMenu hub boot + navigation (complete)
-✓ Phase 5.2: Commands pane (wired — read-only list + nav)
+✓ Phase 5.2: Commands pane (CRUD complete)
 ✓ Phase 5.3: Providers & Models pane (wired — read-only list + nav)
 ⏸ Phase 5.4+: Permissions/MCP/Process & Logs/Settings (not started)
 ✗ CRUD persistence for Commands/Providers (not implemented)
@@ -21,7 +21,7 @@ Phase 5.1 — MainMenu Hub ✓ COMPLETE (commit 3d6457e)
 - Test: mainmenu_boot_dispatches_and_back_returns
 
 ─────────────────────────────────────────────────────────────────────
-Phase 5.2 — Commands Pane ✓ READ-ONLY FUNCTIONAL
+Phase 5.2 — Commands Pane ✓ COMPLETE
 ─────────────────────────────────────────────────────────────────────
 Important correction: commit 4407d6f ("Commands pane (5.2)") shipped
 `core/commands.rs` + `widgets/commands.rs` but NEVER wired the pane —
@@ -34,15 +34,9 @@ Current behavior:
   via `commands::list_commands`; missing dir → empty list, never blocks.
 - MainMenu row 5 (index 4) → Commands pane; j/k/arrows navigate with
   wrap; Esc/q returns to MainMenu; mouse scroll works.
-- Header shows count + dirty flag placeholder; hints text shows
-  `[n] new  [d] delete` but those keys are NOT bound (no persistence).
-
-Deferred (widget `commands_is_dirty` field is reserved for this):
-- Create/delete on disk (needs name-entry modal like PresetNameNew,
-  plus atomic write of the new .md file).
-- Fix: `commands.rs::find_delimiters` indexes `content[y1 + 3..y2]` but
-  `y1` is already the offset AFTER "---\n" — a pre-existing off-by-3 in
-  parsing that makes most real files fail scanning. Fix with the wire-up.
+- `[n]` creates a validated project-local command atomically, `[e]` edits its
+  description, `[a]` agent, `[m]` model, and `[d]` deletes its scanned source.
+  Global commands are listed but cannot be deleted in the project UI.
 
 ─────────────────────────────────────────────────────────────────────
 Phase 5.3 — Providers & Models Pane ✓ READ-ONLY FUNCTIONAL

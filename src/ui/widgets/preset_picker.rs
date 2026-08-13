@@ -30,10 +30,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
     match app.mode {
         Mode::PresetNameNew => {
-            let text = format!(
-                "save selected-agents' settings as preset\n> {}",
-                app.modal_input
-            );
+            let (title, prompt) = if app.pending_command_name {
+                (" new command ", "command name")
+            } else {
+                (" new preset ", "save selected-agents' settings as preset")
+            };
+            let text = format!("{prompt}\n> {}", app.modal_input);
             frame.render_widget(
                 Paragraph::new(text)
                     .block(
@@ -41,7 +43,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                             .borders(Borders::ALL)
                             .border_type(BorderType::Rounded)
                             .border_style(Style::default().fg(t.accent))
-                            .title(" new preset "),
+                            .title(title),
                     )
                     .wrap(Wrap { trim: false }),
                 popup,

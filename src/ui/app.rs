@@ -276,8 +276,6 @@ pub enum Action {
     PermPatternDelete,
     /// Commands pane: open name-entry modal ("new command").
     CommandNewStart,
-    /// Commands pane: create file + refresh list.
-    CommandCreate,
     /// Commands pane: edit `agent` / `model` frontmatter on highlighted file.
     CommandEditAgent,
     CommandEditModel,
@@ -390,8 +388,8 @@ pub struct App {
     pub settings_cursor: usize,
     /// The single active value-edit dialog, shared by every pane.
     pub edit_prompt: Option<EditPrompt>,
-    /// Pending command name inside CommandNewStart flow (held in modal_input).
-    pub pending_command_name: Option<String>,
+    /// Marks the shared name-entry modal as a command creation flow.
+    pub pending_command_name: bool,
 }
 
 /// Phase 5 hub items. Index ↔ `mainmenu_cursor`. Binary digit keys (1..6)
@@ -519,7 +517,7 @@ impl App {
                 .unwrap_or_default(),
             settings_cursor: 0,
             edit_prompt: None,
-            pending_command_name: None,
+            pending_command_name: false,
         };
         // Best-effort: load presets on boot; errors land in the log but never
         // block the UI (a corrupt presets file shouldn't break agent editing).
@@ -985,7 +983,8 @@ impl App {
                     self.modal_input.clear();
                     self.pending_preset = None;
                     self.modal_focus = ModalFocus::Input;
-                    self.mode = if self.pending_command_name.take().is_some() {
+                    self.mode = if self.pending_command_name {
+                        self.pending_command_name = false;
                         Mode::Commands
                     } else {
                         Mode::List
@@ -1049,7 +1048,7 @@ impl App {
                     // Disambiguate between "n" from the Preset picker (capture
                     // selection) and "n" from Commands pane (create file). The
                     // latter holds `pending_command_name`, so fork here.
-                    if self.pending_command_name.is_some() {
+                    if self.pending_command_name {
                         self.command_create_from_modal();
                         // command_create sets Mode::Commands; don't overwrite
                     } else {
@@ -1239,12 +1238,7 @@ impl App {
                     self.modal_input.clear();
                     self.mode = Mode::PresetNameNew; // reuse name-entry modal
                                                      // Note: PresetNameNew accepts will save as command below via branch.
-                    self.pending_command_name = Some(String::new());
-                }
-            }
-            CommandCreate => {
-                if self.mode == Mode::PresetNameNew && self.pending_command_name.is_some() {
-                    self.command_create_from_modal();
+                    self.pending_command_name = true;
                 }
             }
             CommandEditAgent => {
@@ -2109,61 +2103,44 @@ impl App {
 
     fn command_create_from_modal(&mut self) {
         let name = self.modal_input.trim().to_string();
-        if name.is_empty() {
-            self.log("empty command name; aborting".to_string());
-            self.mode = Mode::Commands;
-            self.pending_command_name = None;
-            return;
-        }
-        let tmp = crate::core::commands::Command {
-            name: name.clone(),
-            description: "created via TUI".to_string(),
-            agent: None,
-            model: None,
-            path: std::path::PathBuf::new(),
-        };
-        let body = format!("{}\n\n", tmp.serialize());
-        let path = self
-            .project_root
-            .join(".opencode")
-            .join("commands")
-            .join(format!("{name}.md"));
-        if let Err(e) = crate::core::fs_util::atomic_write(&path, &body) {
-            self.log(format!("command create failed: {e}"));
-        } else {
-            self.log(format!("command '{name}' created"));
-            if let Ok(cs) = crate::core::commands::list_commands(&self.project_root) {
-                self.commands = cs;
+        match crate::core::commands::create_project_command(&self.project_root, &name) {
+            Ok(_) => {
+                self.commands_refresh();
                 self.commands_cursor = self
                     .commands
                     .iter()
                     .position(|c| c.name == name)
                     .unwrap_or(0);
+                self.log(format!("command '{name}' created"));
             }
+            Err(e) => self.log(format!("command create failed: {e}")),
         }
         self.mode = Mode::Commands;
-        self.pending_command_name = None;
+        self.pending_command_name = false;
         self.modal_input.clear();
     }
 
     fn command_delete_current(&mut self) {
-        let Some(c) = self.commands.get(self.commands_cursor).cloned() else {
+        let Some(command) = self.commands.get(self.commands_cursor).cloned() else {
             return;
         };
-        let path = self
-            .project_root
-            .join(".opencode")
-            .join("commands")
-            .join(format!("{}.md", c.name));
-        match std::fs::remove_file(&path) {
+        if !command
+            .path
+            .starts_with(self.project_root.join(".opencode"))
+        {
+            self.log(format!(
+                "command '{}' is global and cannot be deleted here",
+                command.name
+            ));
+            return;
+        }
+        match std::fs::remove_file(&command.path) {
             Ok(()) => {
-                self.log(format!("command '{}' removed", c.name));
-                if let Ok(cs) = crate::core::commands::list_commands(&self.project_root) {
-                    self.commands = cs;
-                    if self.commands_cursor > 0 {
-                        self.commands_cursor -= 1;
-                    }
+                if self.commands_cursor > 0 {
+                    self.commands_cursor -= 1;
                 }
+                self.commands_refresh();
+                self.log(format!("command '{}' removed", command.name));
             }
             Err(e) => self.log(format!("command delete failed: {e}")),
         }
@@ -2402,6 +2379,50 @@ mod tests {
         assert_eq!(app.mode, Mode::Mcp);
         app.update(Action::BackToMenu);
         assert_eq!(app.mode, Mode::MainMenu);
+    }
+
+    #[test]
+    fn command_create_and_project_only_delete_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let mut app = App::new(Vec::new(), root.clone()).with_mode(Mode::Commands);
+
+        app.update(Action::CommandNewStart);
+        assert_eq!(app.mode, Mode::PresetNameNew);
+        assert!(app.pending_command_name);
+        for ch in "deploy".chars() {
+            app.update(Action::PresetInput(ch));
+        }
+        app.update(Action::PresetSaveNew);
+        let path = root.join(".opencode/commands/deploy.md");
+        assert!(path.exists());
+        assert_eq!(app.mode, Mode::Commands);
+        assert!(!app.pending_command_name);
+
+        app.update(Action::CommandDelete);
+        assert!(!path.exists());
+
+        let global_path = root.join("global-command.md");
+        std::fs::write(&global_path, "body").unwrap();
+        app.commands = vec![crate::core::commands::Command {
+            name: "global".to_string(),
+            description: String::new(),
+            agent: None,
+            model: None,
+            path: global_path.clone(),
+        }];
+        app.commands_cursor = 0;
+        app.update(Action::CommandDelete);
+        assert!(global_path.exists());
+        assert!(app
+            .log
+            .iter()
+            .any(|line| line.contains("cannot be deleted")));
+
+        app.update(Action::CommandNewStart);
+        app.update(Action::CancelModal);
+        assert_eq!(app.mode, Mode::Commands);
+        assert!(!app.pending_command_name);
     }
 
     #[test]

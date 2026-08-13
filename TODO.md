@@ -57,7 +57,7 @@
 
 ## 7. Phase 5 — Full Manager Surfaces (see ROADMAP.md Phase 5)
 - [x] **[P1]** New `Mode::MainMenu` as boot mode; `1..6`/`j/k`/`Enter` select pane, `Esc` back. Current `Mode::List` renamed to Subagents surface *in routing only* (keep enum to avoid churn). Main menu items: Subagents, Providers & Models, Permissions, MCP Servers, Commands, Process & Logs, Settings/Theme.
-- [x] **[P1]** Commands pane (`.opencode/commands/*.md`): list + nav wired (5.2 read-only shipped; create/edit/delete via modal + CST deferred).
+- [x] **[P1]** Commands pane (`.opencode/commands/*.md`): list/nav plus create, edit (`description`/`agent`/`model`), and project-local delete with atomic persistence.
 - [ ] **[P1]** MCP servers pane: read `mcp.*` map; Space toggles enabled; `n` add / `e` edit / `d` delete.
 - [ ] **[P2]** Permissions pane: cycle ask/allow/deny on `permission.<tool>`; per-agent overrides; glob tables.
 - [~] **[P2]** Providers pane: list + nav wired (read-only shipped 5.5 partial). Remaining: baseURL/apiKey/headers edit via CST, blacklist/whitelist, models limits.
